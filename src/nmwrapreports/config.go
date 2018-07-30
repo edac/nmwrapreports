@@ -10,11 +10,14 @@ import (
 
 // Config is info from config file
 type Config struct {
-	IP      string
-	Port    string
+	IP             string
+	Port           string
 	DownloadWindow string
-	AltPath string
-
+	AltPath        string
+	DBUser         string
+	DBPass         string
+	DBName         string
+	Secret         string
 }
 
 // ReadConfig reads info from config file
