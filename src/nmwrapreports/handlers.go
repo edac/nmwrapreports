@@ -1,27 +1,56 @@
 package main
 
 import (
-
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"os"
+	"reflect"
+	//"reflect"
+	//"crypto/sha512"
+	"archive/zip"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html/template"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"strconv"
-	"strings"
-	//"reflect"
+	jwt "github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	"github.com/jonas-p/go-shp"
 	"github.com/jung-kurt/gofpdf"
 	"github.com/wcharczuk/go-chart"
 	"github.com/wcharczuk/go-chart/drawing"
-
+	"html/template"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	//"reflect"
+	"crypto/sha512"
+	"database/sql"
+	"encoding/hex"
+	_ "github.com/go-sql-driver/mysql"
+	mathrand "math/rand"
+	"net/smtp"
+	"strconv"
+	"strings"
+	"time"
 )
 
-// FireStations type is for marshalling the output from arcgis server
+type Userpack struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type CreateUserpack struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+type PassPack struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+//FireStations type is for marshalling the output from arcgis server
 type FireStations struct {
 	DisplayFieldName string `json:"displayFieldName"`
 	Features         []struct {
@@ -262,9 +291,6 @@ type WatershedsHUC8 struct {
 	} `json:"fields"`
 }
 
-
-
-
 // County type is for marshalling the output from arcgis server
 type County struct {
 	DisplayFieldName string `json:"displayFieldName"`
@@ -287,6 +313,7 @@ type County struct {
 	} `json:"fields"`
 }
 
+//Geom starting struct for geometry
 type Geom struct {
 	Rings [][][]float64 `json:"rings"`
 	Title string        `json:"title"`
@@ -295,6 +322,57 @@ type Geom struct {
 type justGeom struct {
 	Rings [][][]float64 `json:"rings"`
 	Title string        `json:"title"`
+}
+
+func MakeSalt(n int) string {
+	mathrand.Seed(time.Now().UnixNano())
+
+	var saltrune = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = saltrune[mathrand.Intn(len(saltrune))]
+	}
+	return string(b)
+}
+
+func HashPass(pw string, salt string) string {
+	hash := sha512.New()
+	hash.Write([]byte(pw + salt))
+	md := hash.Sum(nil)
+	mdStr := hex.EncodeToString(md)
+	return mdStr
+
+}
+
+func RandString(n int) string {
+	var letterRunes = []rune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[mathrand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
+// func checkCount(rows *sql.Rows) (count int) {
+// 	for rows.Next() {
+// 		err := rows.Scan(&count)
+// 		logErr(err)
+// 	}
+// 	return count
+// }
+
+func GetCookieParts(r *http.Request) UserClaims {
+	var cookie, err = r.Cookie("nmwrap")
+	logErr(err)
+	cookieparts := strings.Split(cookie.Value, ".")
+	fmt.Println(cookieparts)
+	data, _ := base64.StdEncoding.DecodeString(cookieparts[1] + "==")
+	fmt.Println(string(data))
+	var user UserClaims
+	json.Unmarshal([]byte(string(data)), &user)
+	fmt.Println(user.EMail)
+	return user
 }
 
 func randomFilename() (s string, err error) {
@@ -306,9 +384,6 @@ func randomFilename() (s string, err error) {
 	s = fmt.Sprintf("%x", b)
 	return
 }
-
-
-
 
 //Index is the front page of the app
 func Index(w http.ResponseWriter, r *http.Request) {
@@ -339,8 +414,421 @@ func GetPOSTGeom(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "This route requires a POST to do anything ")
 }
 
+//Login function
+func Login(w http.ResponseWriter, r *http.Request) {
+	//tokenmap := make(map[string]string)
+	// connectstring := dbuser + ":" + dbpass + "@/" + dbname
+	// log.Println(connectstring)
+	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		log.Println(err)
+		return
+	}
+	defer db.Close()
+	err = db.Ping()
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		log.Println(err)
+		return
+	}
 
+	// sha_512 := sha512.New()
+	jsbody, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		log.Println(err)
+		return
+	}
 
+	var user Userpack
+	json.Unmarshal([]byte(string(jsbody)), &user)
+	rows, err := db.Query("SELECT * FROM users WHERE email='" + user.Email + "'")
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		log.Println(err)
+		return
+	}
+	var id int
+	var name string
+	var email string
+	var userssalt string
+	var hash string
+	var admin bool
+
+	for rows.Next() {
+
+		err = rows.Scan(&id, &name, &email, &userssalt, &hash, &admin)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			log.Println(err)
+		}
+
+	}
+	log.Println(id)
+	log.Println(name)
+	log.Println(userssalt)
+	log.Println(hash)
+
+	//first we generate the proposed hash...
+	submittedhashed := HashPass(user.Password, userssalt)
+	if submittedhashed == hash {
+		//password is good
+		log.Println("pass is good")
+		claims["admin"] = admin
+		claims["name"] = name
+		claims["email"] = email
+		claims["exp"] = time.Now().Add(time.Hour * 24).Unix()
+		tokenString, _ := token.SignedString(mySigningKey)
+		http.SetCookie(w, &http.Cookie{
+			Name:       "nmwrap",
+			Value:      tokenString,
+			Path:       "/",
+			RawExpires: "0",
+		})
+		tokenmap[email] = tokenString
+		fmt.Println(tokenmap)
+
+	} else {
+
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+
+}
+func CreateUser(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		// connectstring := dbuser + ":" + dbpass + "@/" + dbname
+		// log.Println(connectstring)
+		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			log.Println(err)
+			return
+		}
+		defer db.Close()
+		err = db.Ping()
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			log.Println(err)
+			return
+		}
+
+		jsbody, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			log.Println(err)
+
+			return
+		}
+
+		var user CreateUserpack
+		json.Unmarshal([]byte(string(jsbody)), &user)
+		log.Println(user.Email)
+		log.Println(user.Name)
+		randstring, _ := randomFilename()
+		salt := MakeSalt(200)
+		hashedpass := HashPass(randstring, salt)
+		TheQuery := "INSERT INTO users (name,email,salt,hash,admin)  VALUES (\"" + user.Name + "\",\"" + user.Email + "\",\"" + salt + "\",\"" + hashedpass + "\",false);"
+		log.Println(TheQuery)
+		_, err = db.Exec(TheQuery)
+		if err != nil {
+			log.Fatal(err)
+		} else {
+			ResetToken := RandString(200)
+			TheQuery := "INSERT INTO passwordtokens (email,token)  VALUES (\"" + user.Email + "\",\"" + ResetToken + "\");"
+			log.Println(TheQuery)
+			_, err := db.Exec(TheQuery)
+			if err != nil {
+				log.Fatal(err)
+			} else {
+				w.WriteHeader(http.StatusOK)
+				// SendMail(string(user.Email), ResetToken)
+				eMessage := "To:" + user.Email + "\r\n" +
+					"Subject: NMWRAP Account creation \r\n" +
+					"\r\n" +
+					"Your account has been created.\r\n" +
+					"Set your password by using the link below.\r\n" +
+					"https://nmwrap.org/?token=" + ResetToken + "\r\n"
+
+				SendMail(user.Email, eMessage)
+				fmt.Fprintln(w, "mail sent")
+			}
+			// c, err := smtp.Dial("edacmail.unm.edu:25")
+			// if err != nil {
+			// 	log.Fatal(err)
+			// }
+			// defer c.Close()
+			// // Set the sender and recipient.
+			// c.Mail("nmwrap@edac.unm.edu")
+			// c.Rcpt(user.Email)
+
+			// // Send the email body.
+			// wc, err := c.Data()
+			// if err != nil {
+			// 	log.Fatal(err)
+			// }
+			// defer wc.Close()
+			// buf := bytes.NewBufferString("To:" + user.Email + "\r\n" +
+			// 	"Subject: NMWRAP Account\r\n" +
+			// 	"\r\n" +
+			// 	"This is the email body.\r\n")
+			// //"Hello, " + user.Name)
+			// if _, err = buf.WriteTo(wc); err != nil {
+			// 	log.Fatal(err)
+			// }
+			// log.Println(result)
+			// log.Println(err)
+			fmt.Fprintln(w, "Account "+user.Email+"created.")
+		}
+	}
+}
+
+//Logout function
+func Logout(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		user := GetCookieParts(r)
+		//fmt.Fprintln(w, tokenmap[user.EMail])
+		delete(tokenmap, user.EMail)
+
+		if val, ok := tokenmap[user.EMail]; ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, val+" is NOT logged out")
+		} else {
+			w.WriteHeader(http.StatusOK)
+
+			fmt.Fprintln(w, "You are  logged out")
+		}
+	} else {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintln(w, "You are not logged in. Please log in first.")
+	}
+}
+
+func ChangePassword(w http.ResponseWriter, r *http.Request) {
+	jsbody, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		log.Println(err)
+
+		return
+	}
+	var passpak PassPack
+	json.Unmarshal([]byte(string(jsbody)), &passpak)
+
+	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	logErr(err)
+	var usermail string
+	err = db.QueryRow("SELECT email FROM passwordtokens WHERE token=?", passpak.Token).Scan(&usermail)
+
+	switch {
+	case err == sql.ErrNoRows:
+		w.WriteHeader(http.StatusInternalServerError)
+
+	case err != nil:
+
+		fmt.Fprintln(w, err)
+	default:
+		var usersalt string
+		err = db.QueryRow("SELECT salt from users WHERE email =?", usermail).Scan(&usersalt)
+		logErr(err)
+		// log.Println(usersalt)
+		newhash := HashPass(passpak.Password, usersalt)
+		// log.Println(newhash)
+		// err = db.QueryRow("UPDATE users SET hash =? WHERE email =?", newhash, usermail).Scan(&usersalt)
+		_, err := db.Exec("UPDATE users SET hash =? WHERE email =?", newhash, usermail)
+		if err != nil {
+			log.Println("a")
+			log.Println(err)
+		} else {
+			TheQuery := "DELETE FROM passwordtokens WHERE email=\"" + string(usermail) + "\";"
+			log.Println(TheQuery)
+			_, err := db.Exec(TheQuery)
+			if err != nil {
+				log.Println("B")
+				log.Fatal(err)
+			} else {
+
+				w.WriteHeader(http.StatusOK)
+			}
+		}
+
+	}
+
+	// log.Println(passpak.Token)
+	// log.Println(passpak.Password)
+}
+func SendMail(resetemail string, message string) {
+
+	c, err := smtp.Dial("edacmail.unm.edu:25")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
+	// Set the sender and recipient.
+	c.Mail("nmwrap@edac.unm.edu")
+	c.Rcpt(resetemail)
+
+	// Send the email body.
+	wc, err := c.Data()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer wc.Close()
+	buf := bytes.NewBufferString(message)
+	//"Hello, " + user.Name)
+	_, err = buf.WriteTo(wc)
+	logErr(err)
+}
+
+//ResetPassword will create a temporary key that a user can use to reset password.
+func ResetPassword(w http.ResponseWriter, r *http.Request) {
+	resetemail, err := ioutil.ReadAll(r.Body)
+	logErr(err)
+	if !strings.Contains(string(resetemail), " ") && strings.Contains(string(resetemail), "@") {
+		// fmt.Fprintln(w, string("good"))
+		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+		logErr(err)
+		var userid string
+		err = db.QueryRow("SELECT id FROM users WHERE email=?", string(resetemail)).Scan(&userid)
+
+		switch {
+		case err == sql.ErrNoRows:
+			log.Printf("No user with that ID.")
+
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintln(w, "No user with that address")
+			return
+		case err != nil:
+			log.Fatal(err)
+			fmt.Fprintln(w, err)
+			return
+		default:
+
+			TheQuery := "DELETE FROM passwordtokens WHERE email=\"" + string(resetemail) + "\";"
+			log.Println(TheQuery)
+			result1, err := db.Exec(TheQuery)
+			if err != nil {
+				log.Fatal(err)
+			} else {
+				fmt.Fprintln(w, result1)
+
+				ResetToken := RandString(200)
+				TheQuery := "INSERT INTO passwordtokens (email,token)  VALUES (\"" + string(resetemail) + "\",\"" + ResetToken + "\");"
+				log.Println(TheQuery)
+				_, err := db.Exec(TheQuery)
+				if err != nil {
+					log.Fatal(err)
+				} else {
+					w.WriteHeader(http.StatusOK)
+					eMessage := "To:" + string(resetemail) + "\r\n" +
+						"Subject: NMWRAP Password Reset \r\n" +
+						"\r\n" +
+						"Reset your password by using the link below.\r\n" +
+						"https://nmwrap.org/?token=" + ResetToken + "\r\n"
+
+					SendMail(string(resetemail), eMessage)
+					fmt.Fprintln(w, "mail sent")
+					//fmt.Println(result)
+					// c, err := smtp.Dial("edacmail.unm.edu:25")
+					// if err != nil {
+					// 	log.Fatal(err)
+					// }
+					// defer c.Close()
+					// // Set the sender and recipient.
+					// c.Mail("nmwrap@edac.unm.edu")
+					// c.Rcpt(string(resetemail))
+
+					// // Send the email body.
+					// wc, err := c.Data()
+					// if err != nil {
+					// 	log.Fatal(err)
+					// }
+					// defer wc.Close()
+					// buf := bytes.NewBufferString("To:" + string(resetemail) + "\r\n" +
+					// 	"Subject: NMWRAP Password Reset \r\n" +
+					// 	"\r\n" +
+					// 	"https://nmwrap.org/?token=" + ResetToken + "\r\n")
+					// //"Hello, " + user.Name)
+					// _, err = buf.WriteTo(wc)
+					// logErr(err)
+					// if err != nil {
+					// 	log.Fatal(err)
+					// } else {
+					// 	w.WriteHeader(http.StatusOK)
+					// 	fmt.Fprintln(w, "mail sent")
+					// }
+				}
+			}
+		}
+
+	} else {
+		fmt.Fprintln(w, string("bad"))
+
+	}
+	//	fmt.Fprintln(w, string(resetemail))
+}
+
+func logerr(err error) {
+	if err != nil {
+		log.Println(err)
+	}
+}
+func IsLoggedIn(r *http.Request) bool {
+	var cookie, err = r.Cookie("nmwrap")
+	if err != nil {
+		log.Println(err)
+	} else {
+		fmt.Println(cookie)
+		logerr(err)
+		//data, err := base64.StdEncoding.DecodeString(cookie.Value)
+		logerr(err)
+		token, err := jwt.ParseWithClaims(cookie.Value, &UserClaims{}, func(token *jwt.Token) (interface{}, error) {
+			return []byte(secret), nil
+		})
+		logErr(err)
+		if claims, ok := token.Claims.(*UserClaims); ok && token.Valid && cookie.Value == tokenmap[claims.EMail] {
+			return true
+
+		} else {
+			return false
+		}
+	}
+	return false
+}
+
+//LoggedIn is used for clients to take no action, but check if the server has logged them out.
+func LoggedIn(w http.ResponseWriter, r *http.Request) {
+
+	if IsLoggedIn(r) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "Logged in!")
+	} else {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintln(w, "You are not logged in. Please log in first.")
+	}
+
+}
+
+func CheckReset(w http.ResponseWriter, r *http.Request) {
+	tok, err := ioutil.ReadAll(r.Body)
+	logErr(err)
+	token := string(tok)
+	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	logErr(err)
+	var usermail string
+	err = db.QueryRow("SELECT email FROM passwordtokens WHERE token=?", token).Scan(&usermail)
+
+	switch {
+	case err == sql.ErrNoRows:
+		logErr(err)
+		fmt.Fprintln(w, "False")
+	case err != nil:
+
+		fmt.Fprintln(w, err)
+	default:
+		fmt.Fprintln(w, "True")
+	}
+}
 
 // POSTGeom is how the user generates reports, by putting geom...
 func POSTGeom(w http.ResponseWriter, r *http.Request) {
@@ -366,21 +854,20 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 	pdf.SetFont("Helvetica", "", 35)
 	pdf.WriteAligned(0, 0, myGeom.Title, "C")
 	// pdf.Text(100, 10, myGeom.Title)
-    //pdf.CellFormat(190, 15,myGeom.Title , "0", 1, "CM", false, 0, "")
+	//pdf.CellFormat(190, 15,myGeom.Title , "0", 1, "CM", false, 0, "")
 	pdf.SetFont("Helvetica", "", 16)
-	CARLow:=0
-	CARMed:=0
-	CARHigh:=0
+	CARLow := 0
+	CARMed := 0
+	CARHigh := 0
 	fname, _ := randomFilename()
 	for layernum := 0; layernum < 6; layernum++ {
 		queryurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/NMWRAP/MapServer/" + strconv.Itoa(layernum) + "/query?where=&text=&objectIds=&time=&geometryType=esriGeometryPolygon&inSR=&spatialRel=esriSpatialRelIntersects&relationParam=&outFields=*&returnGeometry=false&returnTrueCurves=false&maxAllowableOffset=&geometryPrecision=&outSR=&returnIdsOnly=false&returnCountOnly=false&orderByFields=&groupByFieldsForStatistics=&outStatistics=&returnZ=false&returnM=false&gdbVersion=&returnDistinctValues=false&resultOffset=&resultRecordCount=&f=pjson&geometry="
 		queryurl = queryurl + string(jsbody)
-		queryurl=strings.Replace(queryurl, " ", "%20", -1)
+		queryurl = strings.Replace(queryurl, " ", "%20", -1)
 		resp, err := http.Get(queryurl)
 		if err != nil {
 			log.Println(err)
 		}
-
 
 		body, err := ioutil.ReadAll(resp.Body)
 		// fmt.Println(string(body))
@@ -391,27 +878,27 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 		case 0:
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15,"Fire stations" , "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Fire stations", "0", 1, "CM", false, 0, "")
 			pdf.SetFont("Helvetica", "", 11)
 			var myJSON FireStations
 			json.Unmarshal(body, &myJSON)
 			//fmt.Println("asaa")
-            //fmt.Println(len(myJSON.Features))
-			FireStationsBlurb := "There are "+strconv.Itoa(len(myJSON.Features))+" fire stations in this area. The proximity of fire stations is essential to an assessment of fire safety. Lorem ipsum dolor sit amet, consectetur adipiscing elit.\nInteger nec odio. Praesent libero. Sed cursus ante dapibus diam. Sed nisi. Nulla quis sem at nibh elementum imperdiet. Duis sagittis ipsum. Praesent mauris. Fusce nec tellus sed augue semper porta. Mauris massa. Vestibulum lacinia arcu eget nulla. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Curabitur sodales ligula in libero."
+			//fmt.Println(len(myJSON.Features))
+			FireStationsBlurb := "There are " + strconv.Itoa(len(myJSON.Features)) + " fire stations in this area. The proximity of fire stations is essential to an assessment of fire safety. Lorem ipsum dolor sit amet, consectetur adipiscing elit.\nInteger nec odio. Praesent libero. Sed cursus ante dapibus diam. Sed nisi. Nulla quis sem at nibh elementum imperdiet. Duis sagittis ipsum. Praesent mauris. Fusce nec tellus sed augue semper porta. Mauris massa. Vestibulum lacinia arcu eget nulla. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Curabitur sodales ligula in libero."
 			lines := pdf.SplitLines([]byte(FireStationsBlurb), 190.0)
 			_, lineHt := pdf.GetFontSize()
 
 			for _, line := range lines {
 				pdf.CellFormat(190.0, lineHt, string(line), "", 1, "TL", false, 0, "")
 			}
-			if len(myJSON.Features)>0{
-			pdf.CellFormat(0, 5, "", "3", 1, "", false, 0, "")
-			pdf.SetFont("Helvetica", "", 12)
-			pdf.CellFormat(45, 7, "Address", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(29, 7, "City", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(116, 7, "Name", "1", 0, "C", true, 0, "")
-			pdf.Ln(-1)
-			pdf.SetFont("Helvetica", "", 6)
+			if len(myJSON.Features) > 0 {
+				pdf.CellFormat(0, 5, "", "3", 1, "", false, 0, "")
+				pdf.SetFont("Helvetica", "", 12)
+				pdf.CellFormat(45, 7, "Address", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(29, 7, "City", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(116, 7, "Name", "1", 0, "C", true, 0, "")
+				pdf.Ln(-1)
+				pdf.SetFont("Helvetica", "", 6)
 			}
 			for _, element := range myJSON.Features {
 				// fmt.Println(element.Attributes.ADDRESS)
@@ -424,10 +911,9 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 		case 1:
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15,"Communities At Risk" , "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Communities At Risk", "0", 1, "CM", false, 0, "")
 
 			pdf.Ln(5)
-
 
 			var myJSON CommunitesatRisk
 			pdf.SetFont("Helvetica", "", 11)
@@ -438,13 +924,13 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			for _, line := range lines {
 				pdf.CellFormat(190.0, lineHt, string(line), "", 1, "TL", false, 0, "")
 			}
-			if len(myJSON.Features)>0{
-			pdf.Ln(3)
-			pdf.SetFont("Helvetica", "", 12)
-			pdf.CellFormat(64, 7, "Name", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(63, 7, "County", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(63, 7, "Rate", "1", 0, "C", true, 0, "")
-			pdf.Ln(-1)
+			if len(myJSON.Features) > 0 {
+				pdf.Ln(3)
+				pdf.SetFont("Helvetica", "", 12)
+				pdf.CellFormat(64, 7, "Name", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(63, 7, "County", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(63, 7, "Rate", "1", 0, "C", true, 0, "")
+				pdf.Ln(-1)
 			}
 			pdf.SetFont("Helvetica", "", 6)
 
@@ -455,13 +941,13 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 				rate := ""
 				if element.Attributes.Rate2016 == "L" {
 					rate = "Low Risk"
-					CARLow+= 1
+					CARLow++
 				} else if element.Attributes.Rate2016 == "M" {
 					rate = "Medium Risk"
-					CARMed+= 1
+					CARMed++
 				} else if element.Attributes.Rate2016 == "H" {
 					rate = "High Risk"
-					CARHigh+= 1
+					CARHigh++
 				}
 				pdf.CellFormat(64, 7, element.Attributes.NAME, "1", 0, "", false, 0, "")
 				pdf.CellFormat(63, 7, element.Attributes.NAME1, "1", 0, "", false, 0, "")
@@ -472,21 +958,17 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			fmt.Println(CARMed)
 			fmt.Println(CARHigh)
 
-
 			ColorGreen := drawing.Color{R: 0, G: 217, B: 101, A: 255}
-		
-			ColorRed := drawing.Color{R: 217, G: 0, B: 116, A: 255}
-		
-			ColorYellow := drawing.Color{R: 217, G: 210, B: 0, A: 255}
 
+			ColorRed := drawing.Color{R: 217, G: 0, B: 116, A: 255}
+
+			ColorYellow := drawing.Color{R: 217, G: 210, B: 0, A: 255}
 
 			DefaultColors := []drawing.Color{
 
 				ColorRed,
 				ColorYellow,
 				ColorGreen,
-
-
 			}
 			type ColorPaletteRed interface {
 				BackgroundColor() drawing.Color
@@ -498,97 +980,91 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 				GetSeriesColor(index int) drawing.Color
 			}
 
-
-
 			fmt.Println("defc colors")
 			fmt.Println(DefaultColors)
 			// var myColorPalette colors.ColorPalette{}
-			
+
 			var colorpal ColorPaletteRed
 			fmt.Println("colorpal")
 			fmt.Println(colorpal)
-			carsummation:=0
-			if CARLow>0{
-				carsummation=carsummation+1
+			carsummation := 0
+			if CARLow > 0 {
+				carsummation = carsummation + 1
 			}
-			if CARMed>0{
-				carsummation=carsummation+1
+			if CARMed > 0 {
+				carsummation = carsummation + 1
 			}
-			if CARHigh>0{
-				carsummation=carsummation+1
+			if CARHigh > 0 {
+				carsummation = carsummation + 1
 			}
-			if carsummation>0{
-			pie := chart.PieChart{
-				Title: "Communities At Risk",
-				// ColorPalette : colorpal ,
-				Width:  512,
-				Height: 512,
-				Values: []chart.Value{
-					{Value: float64(CARHigh), Label: strconv.Itoa(CARHigh)+" High Risk"},
-					{Value: float64(CARMed), Label: strconv.Itoa(CARMed)+" Medium Risk"},
-					{Value: float64(CARLow), Label: strconv.Itoa(CARLow)+" Low Risk"},
-					
-
-				},
-			}
-            fmt.Println("lol")
-			fmt.Println(pie)
-			
-			// s := reflect.ValueOf(&pie).Elem()
-			// typeOfT := s.Type()
-
-			// for i := 0; i < s.NumField(); i++ {
-    		// 	f := s.Field(i)
-    		// 	fmt.Printf("%d: %s %s = %v\n", i,
-        	// 		typeOfT.Field(i).Name, f.Type(), f.Interface())
-			// }
-
-			var lol chart.ColorPalette
-			fmt.Println(lol)
-			buffer := bytes.NewBuffer([]byte{})
-			err = pie.Render(chart.PNG,buffer)
-			if err != nil {
-				fmt.Printf("Error rendering pie chart: %v\n", err)
-			}
-			piereader := bufio.NewReader(buffer)
-
-			var options gofpdf.ImageOptions
-			options.ImageType="PNG"
-			fmt.Println(options)
-			fmt.Println(pdf.GetPageSize())
-			pdf.RegisterImageOptionsReader("piechart",options,piereader)
-			
-
-
-			whatwegot:=297.0
-			whatweneed:=pdf.GetY()+128
-			fmt.Println(whatwegot)
-			fmt.Println(whatweneed)
-			if whatweneed > whatwegot{
-				extrapadding:=297.0-pdf.GetY()
-				
-				pdf.CellFormat(10, extrapadding, "", "0", 0, "", false, 0, "")
+			if carsummation > 0 {
+				pie := chart.PieChart{
+					Title: "Communities At Risk",
+					// ColorPalette : colorpal ,
+					Width:  512,
+					Height: 512,
+					Values: []chart.Value{
+						{Value: float64(CARHigh), Label: strconv.Itoa(CARHigh) + " High Risk"},
+						{Value: float64(CARMed), Label: strconv.Itoa(CARMed) + " Medium Risk"},
+						{Value: float64(CARLow), Label: strconv.Itoa(CARLow) + " Low Risk"},
+					},
+				}
 				fmt.Println("lol")
-				
-			}
-			CurrentX:=pdf.GetX()
-			CurrentY:=pdf.GetY()
-			if pdf.Ok() {
-				
-				pdf.Image("piechart", CurrentX+31, CurrentY, 128, 128, false, "", 0, "")
+				fmt.Println(pie)
 
-					pdf.SetY(CurrentY+128)
+				// s := reflect.ValueOf(&pie).Elem()
+				// typeOfT := s.Type()
+
+				// for i := 0; i < s.NumField(); i++ {
+				// 	f := s.Field(i)
+				// 	fmt.Printf("%d: %s %s = %v\n", i,
+				// 		typeOfT.Field(i).Name, f.Type(), f.Interface())
+				// }
+
+				var lol chart.ColorPalette
+				fmt.Println(lol)
+				buffer := bytes.NewBuffer([]byte{})
+				err = pie.Render(chart.PNG, buffer)
+				if err != nil {
+					fmt.Printf("Error rendering pie chart: %v\n", err)
+				}
+				piereader := bufio.NewReader(buffer)
+
+				var options gofpdf.ImageOptions
+				options.ImageType = "PNG"
+				fmt.Println(options)
+				fmt.Println(pdf.GetPageSize())
+				pdf.RegisterImageOptionsReader("piechart", options, piereader)
+
+				whatwegot := 297.0
+				whatweneed := pdf.GetY() + 128
+				fmt.Println(whatwegot)
+				fmt.Println(whatweneed)
+				if whatweneed > whatwegot {
+					extrapadding := 297.0 - pdf.GetY()
+
+					pdf.CellFormat(10, extrapadding, "", "0", 0, "", false, 0, "")
+					fmt.Println("lol")
+
+				}
+				CurrentX := pdf.GetX()
+				CurrentY := pdf.GetY()
+				if pdf.Ok() {
+
+					pdf.Image("piechart", CurrentX+31, CurrentY, 128, 128, false, "", 0, "")
+
+					pdf.SetY(CurrentY + 128)
+				}
+				fmt.Println(pdf.GetPageSize())
+				fmt.Println(pdf.GetMargins())
+				fmt.Println(CurrentY)
 			}
-			fmt.Println(pdf.GetPageSize())
-			fmt.Println(pdf.GetMargins())
-			fmt.Println(CurrentY)
-		}
 
 		case 2:
 			//IncorporatedCityBoundaries
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15,"Incorporated City Boundaries" , "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Incorporated City Boundaries", "0", 1, "CM", false, 0, "")
 
 			pdf.Ln(5)
 
@@ -602,13 +1078,13 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			for _, line := range lines {
 				pdf.CellFormat(190.0, lineHt, string(line), "", 1, "TL", false, 0, "")
 			}
-			if len(myJSON.Features)>0{
-			pdf.Ln(3)
-			pdf.SetFont("Helvetica", "", 12)
-			pdf.CellFormat(95, 7, "Name", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(95, 7, "Area", "1", 0, "C", true, 0, "")
-			
-			pdf.Ln(-1)
+			if len(myJSON.Features) > 0 {
+				pdf.Ln(3)
+				pdf.SetFont("Helvetica", "", 12)
+				pdf.CellFormat(95, 7, "Name", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(95, 7, "Area", "1", 0, "C", true, 0, "")
+
+				pdf.Ln(-1)
 			}
 			pdf.SetFont("Helvetica", "", 6)
 
@@ -624,7 +1100,7 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			//
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15,"Vegetation Treatments" , "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Vegetation Treatments", "0", 1, "CM", false, 0, "")
 
 			pdf.Ln(5)
 
@@ -637,13 +1113,13 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			for _, line := range lines {
 				pdf.CellFormat(190.0, lineHt, string(line), "", 1, "TL", false, 0, "")
 			}
-			if len(myJSON.Features)>0{
-			pdf.Ln(3)
-			pdf.SetFont("Helvetica", "", 12)
-			pdf.CellFormat(64, 7, "Description", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(63, 7, "NameProj", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(63, 7, "Partners", "1", 0, "C", true, 0, "")
-			pdf.Ln(-1)
+			if len(myJSON.Features) > 0 {
+				pdf.Ln(3)
+				pdf.SetFont("Helvetica", "", 12)
+				pdf.CellFormat(64, 7, "Description", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(63, 7, "NameProj", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(63, 7, "Partners", "1", 0, "C", true, 0, "")
+				pdf.Ln(-1)
 			}
 			pdf.SetFont("Helvetica", "", 6)
 
@@ -660,7 +1136,7 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			//
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15,"Watersheds HUC8" , "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Watersheds HUC8", "0", 1, "CM", false, 0, "")
 
 			pdf.Ln(5)
 
@@ -674,16 +1150,15 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			for _, line := range lines {
 				pdf.CellFormat(190.0, lineHt, string(line), "", 1, "TL", false, 0, "")
 			}
-			if len(myJSON.Features)>0{
-			pdf.Ln(3)
-			pdf.SetFont("Helvetica", "", 12)
-			pdf.CellFormat(64, 7, "Name", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(63, 7, "TNC Ranking", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(63, 7, "State", "1", 0, "C", true, 0, "")
-			pdf.Ln(-1)
-			pdf.SetFont("Helvetica", "", 6)
+			if len(myJSON.Features) > 0 {
+				pdf.Ln(3)
+				pdf.SetFont("Helvetica", "", 12)
+				pdf.CellFormat(64, 7, "Name", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(63, 7, "TNC Ranking", "1", 0, "C", true, 0, "")
+				pdf.CellFormat(63, 7, "State", "1", 0, "C", true, 0, "")
+				pdf.Ln(-1)
+				pdf.SetFont("Helvetica", "", 6)
 			}
-
 
 			pdf.SetFont("Helvetica", "", 6)
 
@@ -700,7 +1175,7 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			//County
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15,"Counties" , "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Counties", "0", 1, "CM", false, 0, "")
 
 			pdf.Ln(5)
 
@@ -713,15 +1188,14 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			for _, line := range lines {
 				pdf.CellFormat(190.0, lineHt, string(line), "", 1, "TL", false, 0, "")
 			}
-			if len(myJSON.Features)>0{
-			pdf.Ln(3)
-			pdf.SetFont("Helvetica", "", 12)
-			pdf.CellFormat(190, 7, "County", "1", 0, "C", true, 0, "")
-			
-			pdf.Ln(-1)
+			if len(myJSON.Features) > 0 {
+				pdf.Ln(3)
+				pdf.SetFont("Helvetica", "", 12)
+				pdf.CellFormat(190, 7, "County", "1", 0, "C", true, 0, "")
+
+				pdf.Ln(-1)
 			}
 			pdf.SetFont("Helvetica", "", 6)
-
 
 			json.Unmarshal(body, &myJSON)
 
@@ -734,7 +1208,6 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 		}
 
 	}
-	
 
 	err = pdf.OutputFileAndClose("/tmp/" + fname + ".pdf")
 	if err != nil {
@@ -758,6 +1231,7 @@ func GetReport(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, fullpath)
 
 }
+
 var (
 	// ColorWhite is white.
 	ColorWhite = drawing.Color{R: 255, G: 255, B: 255, A: 255}
@@ -793,9 +1267,96 @@ var (
 	ColorTransparent = drawing.Color{R: 1, G: 1, B: 1, A: 0}
 )
 
-
 type defaultColorPalette struct{}
+
 func (dp defaultColorPalette) CanvasColorRed() drawing.Color {
 	DefaultCanvasColor := ColorWhite
 	return DefaultCanvasColor
+}
+
+func stringInSlice(a string, list []string) bool {
+	for _, b := range list {
+		if b == a {
+			return true
+		}
+	}
+	return false
+}
+
+func GetReportFromUpload(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		AllowdShapeExtensions := []string{"cpg", "dbf", "prj", "sbn", "sbx", "shp", "shx"}
+
+		//var Buf bytes.Buffer
+		// in your case file would be fileupload
+		fmt.Println(r.FormFile)
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
+		name := strings.Split(header.Filename, ".")
+		fmt.Printf("File name %s\n", name[0])
+		RandomFileName := RandString(10)
+		ZipFile := "/tmp/" + RandomFileName + ".zip"
+		out, err := os.Create(ZipFile)
+		if err != nil {
+			fmt.Fprintf(w, "Unable to create the file for writing. Check your write access privilege")
+			return
+		}
+		defer out.Close()
+		_, err = io.Copy(out, file)
+		if err != nil {
+			fmt.Fprintln(w, err)
+		}
+		reader, err := zip.OpenReader(ZipFile)
+		if err != nil {
+
+			log.Fatal(err)
+
+		}
+
+		defer reader.Close()
+		dest := "/tmp/" + RandomFileName
+		os.MkdirAll(dest, 755)
+		for _, f := range reader.File {
+			fmt.Println(f.Name)
+			extension := strings.Split(f.Name, ".")
+			path := dest + "/" + f.Name
+			if stringInSlice(extension[1], AllowdShapeExtensions) {
+				rc, err := f.Open()
+				logErr(err)
+				defer rc.Close()
+				f, err := os.OpenFile(
+					path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+				logErr(err)
+				defer f.Close()
+
+				_, err = io.Copy(f, rc)
+				logErr(err)
+			}
+		}
+		Shapefile := "/tmp/" + RandomFileName + "/" + name[0] + ".shp"
+		myshape, err := shp.Open(Shapefile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer myshape.Close()
+
+		fields := myshape.Fields()
+		fmt.Println(fields)
+
+		for myshape.Next() {
+			n, p := myshape.Shape()
+
+			// print feature
+			fmt.Println(reflect.TypeOf(p).Elem(), p.BBox())
+			fmt.Println(n)
+
+		}
+
+		return
+	} else {
+		return
+	}
 }
