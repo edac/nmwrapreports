@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/jonas-p/go-shp"
 	"github.com/jung-kurt/gofpdf"
+	gdal "github.com/lukeroth/gdal_go"
 	"github.com/wcharczuk/go-chart"
 	"github.com/wcharczuk/go-chart/drawing"
 	"html/template"
@@ -317,6 +318,11 @@ type County struct {
 type Geom struct {
 	Rings [][][]float64 `json:"rings"`
 	Title string        `json:"title"`
+}
+
+type GeoJSON struct {
+	Type        string        `json:"type"`
+	Coordinates [][][]float64 `json:"coordinates"`
 }
 
 type justGeom struct {
@@ -840,7 +846,7 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 	}
 	var myGeom Geom
 	json.Unmarshal(jsbody, &myGeom)
-
+	fmt.Println(myGeom)
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetFont("Helvetica", "", 16)
 	pdf.AddSpotColor("PANTONE 145 CVC", 0, 42, 100, 25)
@@ -864,6 +870,7 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 		queryurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/NMWRAP/MapServer/" + strconv.Itoa(layernum) + "/query?where=&text=&objectIds=&time=&geometryType=esriGeometryPolygon&inSR=&spatialRel=esriSpatialRelIntersects&relationParam=&outFields=*&returnGeometry=false&returnTrueCurves=false&maxAllowableOffset=&geometryPrecision=&outSR=&returnIdsOnly=false&returnCountOnly=false&orderByFields=&groupByFieldsForStatistics=&outStatistics=&returnZ=false&returnM=false&gdbVersion=&returnDistinctValues=false&resultOffset=&resultRecordCount=&f=pjson&geometry="
 		queryurl = queryurl + string(jsbody)
 		queryurl = strings.Replace(queryurl, " ", "%20", -1)
+		fmt.Println(queryurl)
 		resp, err := http.Get(queryurl)
 		if err != nil {
 			log.Println(err)
@@ -1354,9 +1361,43 @@ func GetReportFromUpload(w http.ResponseWriter, r *http.Request) {
 			fmt.Println(n)
 
 		}
+		spatialRef := gdal.CreateSpatialReference("")
+		spatialRef.FromEPSG(3857)
+		srString, err := spatialRef.ToWKT()
+		fmt.Println(srString)
 
 		return
 	} else {
+		fmt.Println("lasdf")
+		driver := gdal.OGRDriverByName("ESRI Shapefile")
+		fmt.Println(driver)
+		datasource, _ := driver.Open("/tmp/rfBd56ti2SMtYvSgD5xAV0YU99zampta7Z7S575KLkIZ9PYkL17LTlsVqMNTZyLKMIFSD2x28MlgPJ0SDZVHnHJPxMKi0tWxu3pQJ71N5GWfOIGTdSWXbRLGAwD1IkzuZ5G1pEDzqqm3sncCYry01AuHiK7FDcCc35S4IzoOjgm2v8KyBpNlS52DyhMEXiJev6e8bqQK/reportgeom.shp", 0)
+
+		fmt.Println(datasource.LayerCount())
+		layer := datasource.LayerByIndex(0)
+		myfeature := layer.Feature(0)
+		geom := myfeature.Geometry()
+		spatialRef := gdal.CreateSpatialReference("PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"X\",EAST],AXIS[\"Y\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext  +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]")
+		//spatialRef.FromEPSG(3857)
+		geom.TransformTo(spatialRef)
+		fmt.Println(geom.ToWKT())
+		fmt.Println(geom.ToGML())
+		fmt.Println(geom.ToJSON())
+		fmt.Println(geom.ToKML())
+		var myGeoJSON GeoJSON
+		json.Unmarshal([]byte(geom.ToJSON()), &myGeoJSON)
+		fmt.Println(reflect.TypeOf(myGeoJSON.Coordinates[0]))
+		var myGeom Geom
+		myGeom.Title = "test"
+		myGeom.Rings = myGeoJSON.Coordinates
+		res1b, _ := json.Marshal(myGeom)
+		fmt.Println(string(res1b))
+		// for _, v := range myGeoJSON.Coordinates[0] {
+		// 	fmt.Println(v[0])
+		// 	fmt.Println(v[0])
+
+		// }
+		//NextFeature
 		return
 	}
 }
