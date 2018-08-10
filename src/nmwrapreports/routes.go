@@ -100,6 +100,18 @@ var routes = Routes{
 		LoggedIn,
 	},
 	Route{
+		"History",
+		"GET",
+		"/history",
+		History,
+	},
+	Route{
+		"DeleteHistory",
+		"POST",
+		"/deletehistory",
+		DeleteHistory,
+	},
+	Route{
 		"CreateUser",
 		"POST",
 		"/createuser",

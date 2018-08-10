@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"os"
 	"reflect"
 	//"reflect"
@@ -14,9 +15,9 @@ import (
 	"fmt"
 	jwt "github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	gdal "github.com/hbarrett/gdal"
 	"github.com/jonas-p/go-shp"
 	"github.com/jung-kurt/gofpdf"
-	gdal "github.com/lukeroth/gdal_go"
 	"github.com/wcharczuk/go-chart"
 	"github.com/wcharczuk/go-chart/drawing"
 	"html/template"
@@ -31,10 +32,17 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	mathrand "math/rand"
 	"net/smtp"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
+
+type UserHistory struct {
+	ID    string `json:"id"`
+	Geom  Geom   `json:"geom"`
+	Title string `json:"title"`
+}
 
 type Userpack struct {
 	Email    string `json:"email"`
@@ -316,8 +324,9 @@ type County struct {
 
 //Geom starting struct for geometry
 type Geom struct {
-	Rings [][][]float64 `json:"rings"`
-	Title string        `json:"title"`
+	Rings   [][][]float64 `json:"rings"`
+	Title   string        `json:"title"`
+	History bool          `json:"history"`
 }
 
 type GeoJSON struct {
@@ -372,12 +381,12 @@ func GetCookieParts(r *http.Request) UserClaims {
 	var cookie, err = r.Cookie("nmwrap")
 	logErr(err)
 	cookieparts := strings.Split(cookie.Value, ".")
-	fmt.Println(cookieparts)
+	//fmt.Println(cookieparts)
 	data, _ := base64.StdEncoding.DecodeString(cookieparts[1] + "==")
-	fmt.Println(string(data))
+	//fmt.Println(string(data))
 	var user UserClaims
 	json.Unmarshal([]byte(string(data)), &user)
-	fmt.Println(user.EMail)
+	//fmt.Println(user.EMail)
 	return user
 }
 
@@ -420,12 +429,98 @@ func GetPOSTGeom(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "This route requires a POST to do anything ")
 }
 
+func DBInit() (*sql.DB, error) {
+	//	userinfo := map[string]string{}
+	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	if err != nil {
+
+		log.Println(err)
+		return nil, err
+	}
+	defer db.Close()
+	err = db.Ping()
+	if err != nil {
+
+		log.Println(err)
+		return nil, err
+	}
+
+	return db, nil
+
+}
+func UserData(r *http.Request) (map[string]string, error) {
+	//	fmt.Println("start UD")
+	userinfo := map[string]string{}
+	userclaims := GetCookieParts(r)
+	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	if err != nil {
+
+		log.Println(err)
+		return userinfo, err
+	}
+	defer db.Close()
+	err = db.Ping()
+	if err != nil {
+
+		log.Println(err)
+		return userinfo, err
+	}
+	//	fmt.Println("DB Ready")
+	// sha_512 := sha512.New()
+	// jsbody, err := ioutil.ReadAll(r.Body)
+	// if err != nil {
+	// 	log.Println(err)
+	// 	return userinfo, err
+	// }
+
+	// var user Userpack
+	// json.Unmarshal([]byte(string(jsbody)), &user)
+	//fmt.Println(userclaims.EMail)
+	rows, err := db.Query("SELECT * FROM users WHERE email='" + userclaims.EMail + "'")
+	if err != nil {
+		log.Println(err)
+		return userinfo, err
+	}
+	var id int
+	var name string
+	var email string
+	var userssalt string
+	var hash string
+	var admin bool
+
+	for rows.Next() {
+
+		err = rows.Scan(&id, &name, &email, &userssalt, &hash, &admin)
+		if err != nil {
+
+			log.Println(err)
+			return userinfo, err
+		}
+		//fmt.Println(name)
+
+	}
+	stradmin := strconv.FormatBool(admin)
+	//fmt.Println(email)
+	userinfo = map[string]string{
+		"id":        strconv.Itoa(id),
+		"name":      name,
+		"email":     email,
+		"userssalt": userssalt,
+		"hash":      hash,
+		"admin":     string(stradmin),
+	}
+
+	return userinfo, nil
+
+}
+
 //Login function
 func Login(w http.ResponseWriter, r *http.Request) {
 	//tokenmap := make(map[string]string)
 	// connectstring := dbuser + ":" + dbpass + "@/" + dbname
 	// log.Println(connectstring)
 	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	fmt.Println(reflect.TypeOf(db))
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		log.Println(err)
@@ -471,16 +566,16 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		}
 
 	}
-	log.Println(id)
-	log.Println(name)
-	log.Println(userssalt)
-	log.Println(hash)
+	//	log.Println(id)
+	//	log.Println(name)
+	//log.Println(userssalt)
+	//log.Println(hash)
 
 	//first we generate the proposed hash...
 	submittedhashed := HashPass(user.Password, userssalt)
 	if submittedhashed == hash {
 		//password is good
-		log.Println("pass is good")
+		//log.Println("pass is good")
 		claims["admin"] = admin
 		claims["name"] = name
 		claims["email"] = email
@@ -493,7 +588,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 			RawExpires: "0",
 		})
 		tokenmap[email] = tokenString
-		fmt.Println(tokenmap)
+		//	fmt.Println(tokenmap)
 
 	} else {
 
@@ -506,6 +601,7 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 		// connectstring := dbuser + ":" + dbpass + "@/" + dbname
 		// log.Println(connectstring)
 		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+
 		if err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
 			log.Println(err)
@@ -529,35 +625,43 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 
 		var user CreateUserpack
 		json.Unmarshal([]byte(string(jsbody)), &user)
-		log.Println(user.Email)
-		log.Println(user.Name)
+		//log.Println(user.Email)
+		//log.Println(user.Name)
 		randstring, _ := randomFilename()
 		salt := MakeSalt(200)
 		hashedpass := HashPass(randstring, salt)
 		TheQuery := "INSERT INTO users (name,email,salt,hash,admin)  VALUES (\"" + user.Name + "\",\"" + user.Email + "\",\"" + salt + "\",\"" + hashedpass + "\",false);"
-		log.Println(TheQuery)
+		//log.Println(TheQuery)
 		_, err = db.Exec(TheQuery)
 		if err != nil {
 			log.Fatal(err)
 		} else {
 			ResetToken := RandString(200)
 			TheQuery := "INSERT INTO passwordtokens (email,token)  VALUES (\"" + user.Email + "\",\"" + ResetToken + "\");"
-			log.Println(TheQuery)
+			//	log.Println(TheQuery)
 			_, err := db.Exec(TheQuery)
 			if err != nil {
 				log.Fatal(err)
 			} else {
-				w.WriteHeader(http.StatusOK)
-				// SendMail(string(user.Email), ResetToken)
-				eMessage := "To:" + user.Email + "\r\n" +
-					"Subject: NMWRAP Account creation \r\n" +
-					"\r\n" +
-					"Your account has been created.\r\n" +
-					"Set your password by using the link below.\r\n" +
-					"https://nmwrap.org/?token=" + ResetToken + "\r\n"
 
-				SendMail(user.Email, eMessage)
-				fmt.Fprintln(w, "mail sent")
+				emailbodytmp1 := strings.Replace(NewAccountMail, "$name", user.Name, -1)
+				emailbodytmp2 := strings.Replace(emailbodytmp1, "$email", user.Email, -1)
+				emailbody := strings.Replace(emailbodytmp2, "$token", ResetToken, -1)
+
+				mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
+				subject := "Subject: NMWRAP Account!\n"
+				msg := []byte(subject + mime + emailbody)
+				recpt := []string{user.Email}
+				err := smtp.SendMail("edacmail.unm.edu:25", nil, "nmwrap@edac.unm.edu", recpt, msg)
+				if err != nil {
+					log.Println(err)
+					w.WriteHeader(http.StatusInternalServerError)
+					fmt.Fprintln(w, "Account Creation Failed")
+				} else {
+					w.WriteHeader(http.StatusOK)
+					fmt.Fprintln(w, "Account "+user.Email+"created.")
+				}
+
 			}
 			// c, err := smtp.Dial("edacmail.unm.edu:25")
 			// if err != nil {
@@ -584,7 +688,7 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 			// }
 			// log.Println(result)
 			// log.Println(err)
-			fmt.Fprintln(w, "Account "+user.Email+"created.")
+			// fmt.Fprintln(w, "Account "+user.Email+"created.")
 		}
 	}
 }
@@ -647,10 +751,10 @@ func ChangePassword(w http.ResponseWriter, r *http.Request) {
 			log.Println(err)
 		} else {
 			TheQuery := "DELETE FROM passwordtokens WHERE email=\"" + string(usermail) + "\";"
-			log.Println(TheQuery)
+			//log.Println(TheQuery)
 			_, err := db.Exec(TheQuery)
 			if err != nil {
-				log.Println("B")
+				//	log.Println("B")
 				log.Fatal(err)
 			} else {
 
@@ -695,7 +799,8 @@ func ResetPassword(w http.ResponseWriter, r *http.Request) {
 		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
 		logErr(err)
 		var userid string
-		err = db.QueryRow("SELECT id FROM users WHERE email=?", string(resetemail)).Scan(&userid)
+		var name string
+		err = db.QueryRow("SELECT id, name FROM users WHERE email=?", string(resetemail)).Scan(&userid, &name)
 
 		switch {
 		case err == sql.ErrNoRows:
@@ -711,7 +816,7 @@ func ResetPassword(w http.ResponseWriter, r *http.Request) {
 		default:
 
 			TheQuery := "DELETE FROM passwordtokens WHERE email=\"" + string(resetemail) + "\";"
-			log.Println(TheQuery)
+			//log.Println(TheQuery)
 			result1, err := db.Exec(TheQuery)
 			if err != nil {
 				log.Fatal(err)
@@ -720,20 +825,39 @@ func ResetPassword(w http.ResponseWriter, r *http.Request) {
 
 				ResetToken := RandString(200)
 				TheQuery := "INSERT INTO passwordtokens (email,token)  VALUES (\"" + string(resetemail) + "\",\"" + ResetToken + "\");"
-				log.Println(TheQuery)
+				//log.Println(TheQuery)
 				_, err := db.Exec(TheQuery)
 				if err != nil {
 					log.Fatal(err)
 				} else {
-					w.WriteHeader(http.StatusOK)
-					eMessage := "To:" + string(resetemail) + "\r\n" +
-						"Subject: NMWRAP Password Reset \r\n" +
-						"\r\n" +
-						"Reset your password by using the link below.\r\n" +
-						"https://nmwrap.org/?token=" + ResetToken + "\r\n"
 
-					SendMail(string(resetemail), eMessage)
-					fmt.Fprintln(w, "mail sent")
+					emailbodytmp1 := strings.Replace(PasswordReset, "$name", name, -1)
+					emailbodytmp2 := strings.Replace(emailbodytmp1, "$email", string(resetemail), -1)
+					emailbody := strings.Replace(emailbodytmp2, "$token", ResetToken, -1)
+
+					mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
+					subject := "Subject: NMWRAP Password Reset\n"
+					msg := []byte(subject + mime + emailbody)
+					recpt := []string{string(resetemail)}
+					err := smtp.SendMail("edacmail.unm.edu:25", nil, "nmwrap@edac.unm.edu", recpt, msg)
+					if err != nil {
+						log.Println(err)
+						w.WriteHeader(http.StatusInternalServerError)
+						fmt.Fprintln(w, "Account Creation Failed")
+					} else {
+						w.WriteHeader(http.StatusOK)
+						fmt.Fprintln(w, "Account "+string(resetemail)+"created.")
+					}
+
+					// w.WriteHeader(http.StatusOK)
+					// eMessage := "To:" + PasswordReset + "\r\n" +
+					// 	"Subject: NMWRAP Password Reset \r\n" +
+					// 	"\r\n" +
+					// 	"Reset your password by using the link below.\r\n" +
+					// 	"https://nmwrap.org/?token=" + ResetToken + "\r\n"
+
+					// SendMail(string(resetemail), eMessage)
+					// fmt.Fprintln(w, "mail sent")
 					//fmt.Println(result)
 					// c, err := smtp.Dial("edacmail.unm.edu:25")
 					// if err != nil {
@@ -784,7 +908,7 @@ func IsLoggedIn(r *http.Request) bool {
 	if err != nil {
 		log.Println(err)
 	} else {
-		fmt.Println(cookie)
+		//fmt.Println(cookie)
 		logerr(err)
 		//data, err := base64.StdEncoding.DecodeString(cookie.Value)
 		logerr(err)
@@ -804,6 +928,8 @@ func IsLoggedIn(r *http.Request) bool {
 
 //LoggedIn is used for clients to take no action, but check if the server has logged them out.
 func LoggedIn(w http.ResponseWriter, r *http.Request) {
+	// fmt.Println(GetCookieParts(r)
+	//var user UserClaims
 
 	if IsLoggedIn(r) {
 		w.WriteHeader(http.StatusOK)
@@ -836,17 +962,10 @@ func CheckReset(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POSTGeom is how the user generates reports, by putting geom...
-func POSTGeom(w http.ResponseWriter, r *http.Request) {
-
-	jsbody, err := ioutil.ReadAll(r.Body)
-	// fmt.Println(string(jsbody))
-	if err != nil {
-		log.Println(err)
-	}
-	var myGeom Geom
-	json.Unmarshal(jsbody, &myGeom)
-	fmt.Println(myGeom)
+func ReportGen(myGeom Geom, r *http.Request) (string, error) {
+	user := GetCookieParts(r)
+	//useremail=user.EMail
+	//fmt.Println(myGeom)
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetFont("Helvetica", "", 16)
 	pdf.AddSpotColor("PANTONE 145 CVC", 0, 42, 100, 25)
@@ -866,18 +985,35 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 	CARMed := 0
 	CARHigh := 0
 	fname, _ := randomFilename()
+	myGeomMarshal, _ := json.Marshal(myGeom)
 	for layernum := 0; layernum < 6; layernum++ {
-		queryurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/NMWRAP/MapServer/" + strconv.Itoa(layernum) + "/query?where=&text=&objectIds=&time=&geometryType=esriGeometryPolygon&inSR=&spatialRel=esriSpatialRelIntersects&relationParam=&outFields=*&returnGeometry=false&returnTrueCurves=false&maxAllowableOffset=&geometryPrecision=&outSR=&returnIdsOnly=false&returnCountOnly=false&orderByFields=&groupByFieldsForStatistics=&outStatistics=&returnZ=false&returnM=false&gdbVersion=&returnDistinctValues=false&resultOffset=&resultRecordCount=&f=pjson&geometry="
-		queryurl = queryurl + string(jsbody)
-		queryurl = strings.Replace(queryurl, " ", "%20", -1)
+		queryurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/NMWRAP/MapServer/" + strconv.Itoa(layernum) + "/query" //?where=&text=&objectIds=&time=&geometryType=esriGeometryPolygon&inSR=&spatialRel=esriSpatialRelIntersects&relationParam=&outFields=*&returnGeometry=false&returnTrueCurves=false&maxAllowableOffset=&geometryPrecision=&outSR=&returnIdsOnly=false&returnCountOnly=false&orderByFields=&groupByFieldsForStatistics=&outStatistics=&returnZ=false&returnM=false&gdbVersion=&returnDistinctValues=false&resultOffset=&resultRecordCount=&f=pjson&geometry="
+		// queryurl = queryurl + string(myGeomMarshal)
+		// queryurl = strings.Replace(queryurl, " ", "%20", -1)
+		fmt.Println("QUERYURL!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 		fmt.Println(queryurl)
-		resp, err := http.Get(queryurl)
+		resp, err := http.PostForm(queryurl, url.Values{
+			"f":                    {"pjson"},
+			"geometry":             {string(myGeomMarshal)},
+			"geometryType":         {"esriGeometryPolygon"},
+			"outFields":            {"*"},
+			"returnCountOnly":      {"false"},
+			"returnDistinctValues": {"false"},
+			"returnGeometry":       {"false"},
+			"returnIdsOnly":        {"false"},
+			"returnM":              {"false"},
+			"returnTrueCurves":     {"false"},
+			"returnZ":              {"false"},
+			"spatialRel":           {"esriSpatialRelIntersects"}})
+
+		//resp, err := http.Get(queryurl)
 		if err != nil {
 			log.Println(err)
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
-		// fmt.Println(string(body))
+		fmt.Println("giga")
+		fmt.Println(string(body))
 		if err != nil {
 			log.Println(err)
 		}
@@ -961,22 +1097,22 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 				pdf.CellFormat(63, 7, rate, "1", 0, "", false, 0, "")
 				pdf.Ln(-1)
 			}
-			fmt.Println(CARLow)
-			fmt.Println(CARMed)
-			fmt.Println(CARHigh)
+			//fmt.Println(CARLow)
+			//	fmt.Println(CARMed)
+			//	fmt.Println(CARHigh)
 
-			ColorGreen := drawing.Color{R: 0, G: 217, B: 101, A: 255}
+			// ColorGreen := drawing.Color{R: 0, G: 217, B: 101, A: 255}
 
-			ColorRed := drawing.Color{R: 217, G: 0, B: 116, A: 255}
+			// ColorRed := drawing.Color{R: 217, G: 0, B: 116, A: 255}
 
-			ColorYellow := drawing.Color{R: 217, G: 210, B: 0, A: 255}
+			// ColorYellow := drawing.Color{R: 217, G: 210, B: 0, A: 255}
 
-			DefaultColors := []drawing.Color{
+			// DefaultColors := []drawing.Color{
 
-				ColorRed,
-				ColorYellow,
-				ColorGreen,
-			}
+			// 	ColorRed,
+			// 	ColorYellow,
+			// 	ColorGreen,
+			// }
 			type ColorPaletteRed interface {
 				BackgroundColor() drawing.Color
 				BackgroundStrokeColor() drawing.Color
@@ -987,13 +1123,13 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 				GetSeriesColor(index int) drawing.Color
 			}
 
-			fmt.Println("defc colors")
-			fmt.Println(DefaultColors)
+			//	fmt.Println("defc colors")
+			//	fmt.Println(DefaultColors)
 			// var myColorPalette colors.ColorPalette{}
 
-			var colorpal ColorPaletteRed
-			fmt.Println("colorpal")
-			fmt.Println(colorpal)
+			// var colorpal ColorPaletteRed
+			//	fmt.Println("colorpal")
+			//	fmt.Println(colorpal)
 			carsummation := 0
 			if CARLow > 0 {
 				carsummation = carsummation + 1
@@ -1016,8 +1152,8 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 						{Value: float64(CARLow), Label: strconv.Itoa(CARLow) + " Low Risk"},
 					},
 				}
-				fmt.Println("lol")
-				fmt.Println(pie)
+				//	fmt.Println("lol")
+				//	fmt.Println(pie)
 
 				// s := reflect.ValueOf(&pie).Elem()
 				// typeOfT := s.Type()
@@ -1028,8 +1164,8 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 				// 		typeOfT.Field(i).Name, f.Type(), f.Interface())
 				// }
 
-				var lol chart.ColorPalette
-				fmt.Println(lol)
+				// var lol chart.ColorPalette
+				//	fmt.Println(lol)
 				buffer := bytes.NewBuffer([]byte{})
 				err = pie.Render(chart.PNG, buffer)
 				if err != nil {
@@ -1039,19 +1175,19 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 
 				var options gofpdf.ImageOptions
 				options.ImageType = "PNG"
-				fmt.Println(options)
-				fmt.Println(pdf.GetPageSize())
+				//	fmt.Println(options)
+				//	fmt.Println(pdf.GetPageSize())
 				pdf.RegisterImageOptionsReader("piechart", options, piereader)
 
 				whatwegot := 297.0
 				whatweneed := pdf.GetY() + 128
-				fmt.Println(whatwegot)
-				fmt.Println(whatweneed)
+				//	fmt.Println(whatwegot)
+				//	fmt.Println(whatweneed)
 				if whatweneed > whatwegot {
 					extrapadding := 297.0 - pdf.GetY()
 
 					pdf.CellFormat(10, extrapadding, "", "0", 0, "", false, 0, "")
-					fmt.Println("lol")
+					//		fmt.Println("lol")
 
 				}
 				CurrentX := pdf.GetX()
@@ -1062,9 +1198,9 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 
 					pdf.SetY(CurrentY + 128)
 				}
-				fmt.Println(pdf.GetPageSize())
-				fmt.Println(pdf.GetMargins())
-				fmt.Println(CurrentY)
+				//	fmt.Println(pdf.GetPageSize())
+				//	fmt.Println(pdf.GetMargins())
+				//	fmt.Println(CurrentY)
 			}
 
 		case 2:
@@ -1182,7 +1318,7 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 			//County
 			pdf.Ln(15)
 			pdf.SetFont("Helvetica", "", 20)
-			pdf.CellFormat(190, 15, "Counties", "0", 1, "CM", false, 0, "")
+			pdf.CellFormat(190, 15, "Counties with intersecting data", "0", 1, "CM", false, 0, "")
 
 			pdf.Ln(5)
 
@@ -1216,23 +1352,67 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 
 	}
 
-	err = pdf.OutputFileAndClose("/tmp/" + fname + ".pdf")
+	err := pdf.OutputFileAndClose("/tmp/" + fname + ".pdf")
 	if err != nil {
 		log.Println(err)
 	} else {
-		fmt.Fprintln(w, fname)
-	}
 
+		//SELECT id FROM users WHERE email = 'nmwrap@edac.unm.edu' LIMIT 1;
+		//fart
+		// //myGeomMarshal
+		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+		if err != nil {
+			log.Println(err)
+		}
+		defer db.Close()
+		err = db.Ping()
+		if err != nil {
+			log.Println(err)
+		}
+		rows, err := db.Query("SELECT * FROM users WHERE email='" + user.EMail + "'")
+		if err != nil {
+			log.Println(err)
+		}
+		var id int
+		var name string
+		var email string
+		var userssalt string
+		var hash string
+		var admin bool
+
+		for rows.Next() {
+
+			err = rows.Scan(&id, &name, &email, &userssalt, &hash, &admin)
+			if err != nil {
+				log.Println(err)
+			}
+
+		}
+		log.Println(json.Marshal(myGeom))
+		log.Println(myGeom.History)
+		if myGeom.History != true {
+			geomtitle := myGeom.Title
+			marstring, _ := json.Marshal(myGeom)
+			AreaQuery := "INSERT INTO areasofinterest (userid,geom,title)  VALUES ('" + strconv.Itoa(id) + "','" + string(marstring) + "','" + geomtitle + "');"
+			log.Println(AreaQuery)
+			_, err = db.Exec(AreaQuery)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		return fname, nil
+	}
+	return "Yikes", errors.New("End Of Function")
 }
 
 //GetReport shows the generated report.
 func GetReport(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	log.Println(mux.Vars(r))
+	//log.Println(mux.Vars(r))
 	key := vars["key"]
 	fullpath := "/tmp/" + key + ".pdf"
 	fname := vars["fname"]
-	log.Println(fullpath)
+	//log.Println(fullpath)
 	w.Header().Set("Content-Disposition", "attachment; filename="+fname)
 	w.Header().Set("Content-Type", r.Header.Get("Content-Type"))
 	http.ServeFile(w, r, fullpath)
@@ -1290,20 +1470,165 @@ func stringInSlice(a string, list []string) bool {
 	return false
 }
 
+func DeleteHistory(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		fmt.Println("GETTING HERERE!")
+		userdata, err := UserData(r)
+		logErr(err)
+		fmt.Println(userdata["id"])
+		jsbody, err := ioutil.ReadAll(r.Body)
+		var userhist UserHistory
+		if err := json.Unmarshal(jsbody, &userhist); err != nil {
+			log.Println(err)
+		}
+		fmt.Println(userhist.ID)
+
+		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+		if err != nil {
+
+			log.Println(err)
+
+		}
+		defer db.Close()
+		err = db.Ping()
+		if err != nil {
+
+			log.Println(err)
+
+		}
+		logErr(err)
+		// var id int
+		var userid int
+		// var geom string
+		// var title string
+		q := "SELECT userid FROM areasofinterest WHERE id='" + userhist.ID + "'"
+		fmt.Println(q)
+		err = db.QueryRow(q).Scan(&userid)
+		logErr(err)
+
+		fmt.Println("a")
+		fmt.Println(strconv.Itoa(userid))
+		if userdata["id"] == strconv.Itoa(userid) {
+			DeleteQuery := "DELETE FROM areasofinterest WHERE id=\"" + userhist.ID + "\";"
+			fmt.Println(DeleteQuery)
+			_, err := db.Exec(DeleteQuery)
+			if err != nil {
+				log.Fatal(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintln(w, "Failed to delete id"+userhist.ID)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+
+		}
+
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, "You must be logged in!")
+	}
+
+}
+
+func History(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		fmt.Println("start")
+		userdata, err := UserData(r)
+		logErr(err)
+		fmt.Println(userdata)
+		// fmt.Fprintln(w, userdata["email"])
+		db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+		if err != nil {
+
+			log.Println(err)
+
+		}
+		defer db.Close()
+		err = db.Ping()
+		if err != nil {
+
+			log.Println(err)
+
+		}
+		logErr(err)
+		q := "SELECT * FROM areasofinterest WHERE userid='" + userdata["id"] + "'"
+		fmt.Println(q)
+		rows, err := db.Query(q)
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, err)
+		}
+		var id int
+		var userid int
+		var geom string
+		var title string
+		var jsonText = []byte(`[]`)
+		var userhistory []UserHistory
+		if err := json.Unmarshal([]byte(jsonText), &userhistory); err != nil {
+			log.Println(err)
+		}
+
+		// var history []History
+		// err := json.Unmarshal([]byte(jsonText), &history)
+		for rows.Next() {
+
+			err = rows.Scan(&id, &userid, &geom, &title)
+			if err != nil {
+				log.Println(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintln(w, err)
+			}
+			var usergeom Geom
+			if err := json.Unmarshal([]byte(geom), &usergeom); err != nil {
+				log.Println(err)
+			}
+			userhistory = append(userhistory, UserHistory{ID: strconv.Itoa(id), Geom: usergeom, Title: title})
+		}
+		newjson, _ := json.Marshal(userhistory)
+		// fmt.Fprintln(w, string(newjson))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(newjson)
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, "You must be logged in!")
+	}
+}
+
+// POSTGeom is how the user generates reports, by putting geom...
+func POSTGeom(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		jsbody, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Println(err)
+		}
+		var myGeom Geom
+		json.Unmarshal(jsbody, &myGeom)
+		fmt.Println(myGeom)
+		fname, err := ReportGen(myGeom, r)
+		logErr(err)
+		fmt.Fprintln(w, fname)
+	} else {
+
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, "You must be logged in!")
+
+	}
+}
+
 func GetReportFromUpload(w http.ResponseWriter, r *http.Request) {
 	if IsLoggedIn(r) {
 		AllowdShapeExtensions := []string{"cpg", "dbf", "prj", "sbn", "sbx", "shp", "shx"}
 
 		//var Buf bytes.Buffer
 		// in your case file would be fileupload
-		fmt.Println(r.FormFile)
-		file, header, err := r.FormFile("file")
+		//fmt.Println(r.FormFile)
+		file, _, err := r.FormFile("file")
 		if err != nil {
 			panic(err)
 		}
 		defer file.Close()
-		name := strings.Split(header.Filename, ".")
-		fmt.Printf("File name %s\n", name[0])
+		// name := strings.Split(header.Filename, ".")
+		//	fmt.Printf("File name %s\n", name[0])
 		RandomFileName := RandString(10)
 		ZipFile := "/tmp/" + RandomFileName + ".zip"
 		out, err := os.Create(ZipFile)
@@ -1322,15 +1647,19 @@ func GetReportFromUpload(w http.ResponseWriter, r *http.Request) {
 			log.Fatal(err)
 
 		}
-
+		ShapeName := ""
 		defer reader.Close()
 		dest := "/tmp/" + RandomFileName
 		os.MkdirAll(dest, 755)
 		for _, f := range reader.File {
-			fmt.Println(f.Name)
+			//	fmt.Println(f.Name)
 			extension := strings.Split(f.Name, ".")
 			path := dest + "/" + f.Name
 			if stringInSlice(extension[1], AllowdShapeExtensions) {
+				if extension[1] == "shp" {
+					ShapeName = f.Name
+				}
+
 				rc, err := f.Open()
 				logErr(err)
 				defer rc.Close()
@@ -1343,55 +1672,153 @@ func GetReportFromUpload(w http.ResponseWriter, r *http.Request) {
 				logErr(err)
 			}
 		}
-		Shapefile := "/tmp/" + RandomFileName + "/" + name[0] + ".shp"
+		Shapefile := "/tmp/" + RandomFileName + "/" + ShapeName
 		myshape, err := shp.Open(Shapefile)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer myshape.Close()
 
-		fields := myshape.Fields()
-		fmt.Println(fields)
+		// fields := myshape.Fields()
+		//	fmt.Println(fields)
 
-		for myshape.Next() {
-			n, p := myshape.Shape()
+		// for myshape.Next() {
+		// 	n, p := myshape.Shape()
 
-			// print feature
-			fmt.Println(reflect.TypeOf(p).Elem(), p.BBox())
-			fmt.Println(n)
+		// print feature
+		//		fmt.Println(reflect.TypeOf(p).Elem(), p.BBox())
+		//		fmt.Println(n)
 
-		}
-		spatialRef := gdal.CreateSpatialReference("")
-		spatialRef.FromEPSG(3857)
-		srString, err := spatialRef.ToWKT()
-		fmt.Println(srString)
-
-		return
-	} else {
-		fmt.Println("lasdf")
+		// }
+		// spatialRef := gdal.CreateSpatialReference("")
+		// spatialRef.FromEPSG(3857)
+		// srString, err := spatialRef.ToWKT()
+		// fmt.Println(srString)
+		// fmt.Println("lasdf")
 		driver := gdal.OGRDriverByName("ESRI Shapefile")
 		fmt.Println(driver)
-		datasource, _ := driver.Open("/tmp/rfBd56ti2SMtYvSgD5xAV0YU99zampta7Z7S575KLkIZ9PYkL17LTlsVqMNTZyLKMIFSD2x28MlgPJ0SDZVHnHJPxMKi0tWxu3pQJ71N5GWfOIGTdSWXbRLGAwD1IkzuZ5G1pEDzqqm3sncCYry01AuHiK7FDcCc35S4IzoOjgm2v8KyBpNlS52DyhMEXiJev6e8bqQK/reportgeom.shp", 0)
-
+		datasource, _ := driver.Open(Shapefile, 0)
 		fmt.Println(datasource.LayerCount())
 		layer := datasource.LayerByIndex(0)
 		myfeature := layer.Feature(0)
 		geom := myfeature.Geometry()
 		spatialRef := gdal.CreateSpatialReference("PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"X\",EAST],AXIS[\"Y\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext  +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]")
-		//spatialRef.FromEPSG(3857)
+		//	"GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"Degree\",0.017453292519943295]]")
+		//var spatialRef gdal.SpatialReference
+		//spatialRef.FromEPSG(4326)
+		//	fmt.Println("XXX")
+		//	fmt.Println(geom.ToWKT())
+		// fmt.Println(geom.ToGML())
+		// fmt.Println(geom.ToJSON())
+		// fmt.Println(geom.ToKML())
+		//	fmt.Println("YYY")
 		geom.TransformTo(spatialRef)
 		fmt.Println(geom.ToWKT())
-		fmt.Println(geom.ToGML())
+		// fmt.Println(geom.ToGML())
 		fmt.Println(geom.ToJSON())
-		fmt.Println(geom.ToKML())
+		//fmt.Println(geom.ToKML())
+		fmt.Println("ZZZ")
+		fmt.Println(geom)
 		var myGeoJSON GeoJSON
 		json.Unmarshal([]byte(geom.ToJSON()), &myGeoJSON)
-		fmt.Println(reflect.TypeOf(myGeoJSON.Coordinates[0]))
+		//	fmt.Println(reflect.TypeOf(myGeoJSON.Coordinates[0]))
 		var myGeom Geom
-		myGeom.Title = "test"
+		myGeom.Title = r.FormValue("title")
 		myGeom.Rings = myGeoJSON.Coordinates
-		res1b, _ := json.Marshal(myGeom)
-		fmt.Println(string(res1b))
+		fmt.Println(myGeom)
+		// res1b, _ := json.Marshal(myGeom)
+		// fmt.Println(string(res1b))
+
+		// json.Unmarshal(jsbody, &myGeom)
+
+		////////////////////////////Test Block///////////////////////////////////////
+		fmt.Println("a")
+		srcdatasource, _ := driver.Open("/tmp/tl_2010_35_place105.shp", 0)
+		fmt.Println("b")
+		srclayer := srcdatasource.LayerByIndex(0)
+		// var tmplayer gdal.Layer
+		// var tmpfeature gdal.Feature
+		srclayer = srclayer.ReprojectLayer(2002)
+		// lola := srclayer.Feature(0)
+		// fmt.Println("m")
+		// geomlola := lola.Geometry()
+		// fmt.Println(geomlola.ToWKT())
+
+		var myopts []string
+		fmt.Println("c")
+		tmpds, _ := driver.Create("/tmp/tmp"+RandomFileName+".shp", myopts)
+		fmt.Println("d")
+		tmplayer := tmpds.CreateLayer("tmp", spatialRef, gdal.GT_MultiPolygon, myopts)
+		fmt.Println("e")
+		tmpfeaturedef := gdal.CreateFeatureDefinition("tmp")
+		fmt.Println("f")
+		tmpfeature := tmpfeaturedef.Create()
+		fmt.Println("g")
+		tmpfeature.SetGeometry(geom)
+		fmt.Println("h")
+		tmplayer.Create(tmpfeature)
+		fmt.Println("i")
+
+		outds, _ := driver.Create("/tmp/test.shp", myopts)
+
+		lolb := tmplayer.Feature(0)
+		fmt.Println("dsaf")
+		geomlolb := lolb.Geometry()
+		fmt.Println(geomlolb.ToWKT())
+
+		//
+		// tmplayer := tmpds.CreateLayer("tmp", spatialRef, gdal.GT_MultiPolygon, myopts)
+		// fmt.Println(mybool)
+		fmt.Println("j")
+		outlayer := outds.CreateLayer("wat", spatialRef, gdal.GT_MultiPolygon, myopts)
+		fmt.Println("k")
+		tmpcount, _ := tmplayer.FeatureCount(true)
+		srccount, _ := srclayer.FeatureCount(true)
+		fmt.Println(tmpcount)
+		fmt.Println(srccount)
+		outlayer = srclayer.Clip(&tmplayer, &outlayer)
+		fmt.Println("l")
+		// lol := outlayer.Feature(0)
+		// fmt.Println("m")
+		// geomlol := lol.Geometry()
+		// fmt.Println("VVVVVVVVVVVVVVVVVVVVVvv")
+		// fmt.Println(geomlol.ToWKT())
+
+		outds.CopyLayer(outlayer, "luil", myopts)
+		fmt.Println(reflect.TypeOf(outds))
+		///////////////////////////////////////////////////////////////////////////
+
+		fname, err := ReportGen(myGeom, r)
+		logErr(err)
+		fmt.Println(fname)
+		fmt.Fprintln(w, fname)
+
+		// return
+	} else {
+		// fmt.Println("lasdf")
+		// driver := gdal.OGRDriverByName("ESRI Shapefile")
+		// fmt.Println(driver)
+		// datasource, _ := driver.Open("/tmp/rfBd56ti2SMtYvSgD5xAV0YU99zampta7Z7S575KLkIZ9PYkL17LTlsVqMNTZyLKMIFSD2x28MlgPJ0SDZVHnHJPxMKi0tWxu3pQJ71N5GWfOIGTdSWXbRLGAwD1IkzuZ5G1pEDzqqm3sncCYry01AuHiK7FDcCc35S4IzoOjgm2v8KyBpNlS52DyhMEXiJev6e8bqQK/reportgeom.shp", 0)
+
+		// fmt.Println(datasource.LayerCount())
+		// layer := datasource.LayerByIndex(0)
+		// myfeature := layer.Feature(0)
+		// geom := myfeature.Geometry()
+		// spatialRef := gdal.CreateSpatialReference("PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"X\",EAST],AXIS[\"Y\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext  +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]")
+		// //spatialRef.FromEPSG(3857)
+		// geom.TransformTo(spatialRef)
+		// fmt.Println(geom.ToWKT())
+		// fmt.Println(geom.ToGML())
+		// fmt.Println(geom.ToJSON())
+		// fmt.Println(geom.ToKML())
+		// var myGeoJSON GeoJSON
+		// json.Unmarshal([]byte(geom.ToJSON()), &myGeoJSON)
+		// fmt.Println(reflect.TypeOf(myGeoJSON.Coordinates[0]))
+		// var myGeom Geom
+		// myGeom.Title = "test"
+		// myGeom.Rings = myGeoJSON.Coordinates
+		// res1b, _ := json.Marshal(myGeom)
+		// fmt.Println(string(res1b))
 		// for _, v := range myGeoJSON.Coordinates[0] {
 		// 	fmt.Println(v[0])
 		// 	fmt.Println(v[0])
