@@ -58,6 +58,12 @@ var routes = Routes{
 		POSTGeom,
 	},
 	Route{
+		"POSTGeomForExtract",
+		"POST",
+		"/postgeomforextract",
+		POSTGeomForExtract,
+	},
+	Route{
 		"Login",
 		"POST",
 		"/login",
@@ -92,6 +98,12 @@ var routes = Routes{
 		"POST",
 		"/reportupload",
 		GetReportFromUpload,
+	},
+	Route{
+		"ExtractFromUpload",
+		"POST",
+		"/extractfromupload",
+		ExtractFromUpload,
 	},
 	Route{
 		"LoggedIn",

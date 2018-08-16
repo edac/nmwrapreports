@@ -38,6 +38,47 @@ import (
 	"time"
 )
 
+type JobStatus struct {
+	JobID     string `json:"jobId"`
+	JobStatus string `json:"jobStatus"`
+}
+
+type JobSuccess struct {
+	JobID     string `json:"jobId"`
+	JobStatus string `json:"jobStatus"`
+	Results   struct {
+		OutputZipFile struct {
+			ParamURL string `json:"paramUrl"`
+		} `json:"Output_Zip_File"`
+	} `json:"results"`
+	Inputs struct {
+		LayersToClip struct {
+			ParamURL string `json:"paramUrl"`
+		} `json:"Layers_to_Clip"`
+		AreaOfInterest struct {
+			ParamURL string `json:"paramUrl"`
+		} `json:"Area_of_Interest"`
+		FeatureFormat struct {
+			ParamURL string `json:"paramUrl"`
+		} `json:"Feature_Format"`
+		RasterFormat struct {
+			ParamURL string `json:"paramUrl"`
+		} `json:"Raster_Format"`
+		SpatialReference struct {
+			ParamURL string `json:"paramUrl"`
+		} `json:"Spatial_Reference"`
+	} `json:"inputs"`
+	Messages []interface{} `json:"messages"`
+}
+
+type ZipStatus struct {
+	ParamName string `json:"paramName"`
+	DataType  string `json:"dataType"`
+	Value     struct {
+		URL string `json:"url"`
+	} `json:"value"`
+}
+
 type UserHistory struct {
 	ID    string `json:"id"`
 	Geom  Geom   `json:"geom"`
@@ -990,8 +1031,8 @@ func ReportGen(myGeom Geom, r *http.Request) (string, error) {
 		queryurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/NMWRAP/MapServer/" + strconv.Itoa(layernum) + "/query" //?where=&text=&objectIds=&time=&geometryType=esriGeometryPolygon&inSR=&spatialRel=esriSpatialRelIntersects&relationParam=&outFields=*&returnGeometry=false&returnTrueCurves=false&maxAllowableOffset=&geometryPrecision=&outSR=&returnIdsOnly=false&returnCountOnly=false&orderByFields=&groupByFieldsForStatistics=&outStatistics=&returnZ=false&returnM=false&gdbVersion=&returnDistinctValues=false&resultOffset=&resultRecordCount=&f=pjson&geometry="
 		// queryurl = queryurl + string(myGeomMarshal)
 		// queryurl = strings.Replace(queryurl, " ", "%20", -1)
-		fmt.Println("QUERYURL!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-		fmt.Println(queryurl)
+		//fmt.Println("QUERYURL!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+		//fmt.Println(queryurl)
 		resp, err := http.PostForm(queryurl, url.Values{
 			"f":                    {"pjson"},
 			"geometry":             {string(myGeomMarshal)},
@@ -1012,8 +1053,8 @@ func ReportGen(myGeom Geom, r *http.Request) (string, error) {
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
-		fmt.Println("giga")
-		fmt.Println(string(body))
+		//fmt.Println("giga")
+		//fmt.Println(string(body))
 		if err != nil {
 			log.Println(err)
 		}
@@ -1594,6 +1635,155 @@ func History(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func ExtractMailer(message string, recipient string) {
+	//DataExtractMessage
+	emailbody := strings.Replace(DataExtractMessage, "$message", message, -1)
+
+	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
+	subject := "Subject: NMWRAP Data Extract Alert!\n"
+	msg := []byte(subject + mime + emailbody)
+	recpt := []string{recipient}
+	err := smtp.SendMail("edacmail.unm.edu:25", nil, "nmwrap@edac.unm.edu", recpt, msg)
+	if err != nil {
+		log.Println(err)
+
+	}
+}
+
+//ExtractJobs func to check status of jobs and alert.
+func ExtractJobs() {
+	fmt.Println("gigaextract")
+	db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+	if err != nil {
+		log.Println(err)
+		ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+	}
+	defer db.Close()
+	err = db.Ping()
+	if err != nil {
+
+		ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+	}
+
+	rows, err := db.Query("SELECT email, jobid FROM extractjobs WHERE status='1'")
+
+	if err != nil {
+		log.Println(err)
+		//Send mail to nmwrap@edac.unm.edu
+		ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+	} else {
+
+		var jobid string
+		var email string
+
+		// var history []History
+		// err := json.Unmarshal([]byte(jsonText), &history)
+		for rows.Next() {
+			err = rows.Scan(&email, &jobid)
+			if err != nil {
+				ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+				log.Println(err)
+				//send admin mail
+			} else {
+				var netClient = &http.Client{
+					Timeout: time.Second * 10,
+				}
+				url := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/ExtractData/GPServer/Extract%20Data/jobs/" + jobid + "?f=pjson"
+				resp, _ := netClient.Get(url)
+				body, err := ioutil.ReadAll(resp.Body)
+				if err != nil {
+					fmt.Println(err)
+					ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+				} else {
+					var jobstat JobSuccess
+					if err := json.Unmarshal(body, &jobstat); err != nil {
+						log.Println(err)
+						ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+					}
+					if jobstat.JobStatus == "esriJobSucceeded" {
+						outurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/ExtractData/GPServer/Extract%20Data/jobs/" + jobid + "/results/Output_Zip_File?f=pjson"
+
+						zipresp, _ := netClient.Get(outurl)
+						zipbody, err := ioutil.ReadAll(zipresp.Body)
+						if err != nil {
+							fmt.Println("err")
+							ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+						} else {
+							var zipstatus ZipStatus
+							if err := json.Unmarshal(zipbody, &zipstatus); err != nil {
+								log.Println(err)
+								ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+							} else {
+								fmt.Println(zipstatus.Value.URL)
+
+								emailbody := strings.Replace(DataExtractSucess, "$dlurl", zipstatus.Value.URL, -1)
+
+								mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
+								subject := "Subject: NMWRAP Data Extract\n"
+								msg := []byte(subject + mime + emailbody)
+								recpt := []string{email}
+								err := smtp.SendMail("edacmail.unm.edu:25", nil, "nmwrap@edac.unm.edu", recpt, msg)
+								if err != nil {
+									log.Println(err)
+
+								} else {
+									log.Println("JobID " + jobid + " download info sent to " + email)
+
+									TheQuery := "DELETE FROM extractjobs WHERE jobid=\"" + jobid + "\";"
+									//log.Println(TheQuery)
+									_, err := db.Exec(TheQuery)
+									if err != nil {
+										ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+									}
+									//	log.Println("B")
+									logErr(err)
+
+								}
+
+							}
+						}
+
+					} else if jobstat.JobStatus == "esriJobFailed" {
+						ExtractMailer("I am sorry to inform you that your extract job has failed.", email)
+						TheQuery := "DELETE FROM extractjobs WHERE jobid=\"" + jobid + "\";"
+						_, err := db.Exec(TheQuery)
+						if err != nil {
+							ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+						}
+						logErr(err)
+					} else if jobstat.JobStatus == "esriJobTimedOut" {
+						ExtractMailer("I am sorry to inform you that your extract job has timed out", email)
+						TheQuery := "DELETE FROM extractjobs WHERE jobid=\"" + jobid + "\";"
+						_, err := db.Exec(TheQuery)
+						if err != nil {
+							ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+						}
+						logErr(err)
+					} else if jobstat.JobStatus == "esriJobCancelled" {
+						ExtractMailer("I am sorry to inform you that your extract job has been cancled by an admin.", email)
+						TheQuery := "DELETE FROM extractjobs WHERE jobid=\"" + jobid + "\";"
+						_, err := db.Exec(TheQuery)
+						if err != nil {
+							ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+						}
+						logErr(err)
+					} else if jobstat.JobStatus == "esriJobDeleted" {
+						ExtractMailer("I am sorry to inform you that your extract job has been deleted.", email)
+						TheQuery := "DELETE FROM extractjobs WHERE jobid=\"" + jobid + "\";"
+						_, err := db.Exec(TheQuery)
+						if err != nil {
+							ExtractMailer(err.Error(), "nmwrap@edac.unm.edu")
+						}
+						logErr(err)
+					}
+
+				}
+
+			}
+		}
+	}
+}
+
 // POSTGeom is how the user generates reports, by putting geom...
 func POSTGeom(w http.ResponseWriter, r *http.Request) {
 	if IsLoggedIn(r) {
@@ -1604,6 +1794,9 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 		var myGeom Geom
 		json.Unmarshal(jsbody, &myGeom)
 		fmt.Println(myGeom)
+		myRings, _ := json.Marshal(myGeom.Rings)
+		fmt.Println(string(myRings))
+
 		fname, err := ReportGen(myGeom, r)
 		logErr(err)
 		fmt.Fprintln(w, fname)
@@ -1613,6 +1806,259 @@ func POSTGeom(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "You must be logged in!")
 
 	}
+}
+
+func POSTGeomForExtract(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		jsbody, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Println(err)
+		}
+		var myGeom Geom
+		json.Unmarshal(jsbody, &myGeom)
+		//fmt.Println(myGeom)
+		msg, err := ExtractGen(myGeom, r)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, msg)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, msg)
+		}
+		// fmt.Fprintln(w, fname)
+	} else {
+
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, "You must be logged in!")
+
+	}
+}
+func ExtractFromUpload(w http.ResponseWriter, r *http.Request) {
+	if IsLoggedIn(r) {
+		AllowdShapeExtensions := []string{"cpg", "dbf", "prj", "sbn", "sbx", "shp", "shx"}
+
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
+		RandomFileName := RandString(10)
+		ZipFile := "/tmp/" + RandomFileName + ".zip"
+		out, err := os.Create(ZipFile)
+		if err != nil {
+			fmt.Fprintf(w, "Unable to create the file for writing. Check your write access privilege")
+			return
+		}
+		defer out.Close()
+		_, err = io.Copy(out, file)
+		if err != nil {
+			fmt.Fprintln(w, err)
+		}
+		reader, err := zip.OpenReader(ZipFile)
+		if err != nil {
+
+			log.Fatal(err)
+
+		}
+		ShapeName := ""
+		defer reader.Close()
+		dest := "/tmp/" + RandomFileName
+		os.MkdirAll(dest, 755)
+		for _, f := range reader.File {
+			extension := strings.Split(f.Name, ".")
+			path := dest + "/" + f.Name
+			if stringInSlice(extension[1], AllowdShapeExtensions) {
+				if extension[1] == "shp" {
+					ShapeName = f.Name
+				}
+
+				rc, err := f.Open()
+				logErr(err)
+				defer rc.Close()
+				f, err := os.OpenFile(
+					path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+				logErr(err)
+				defer f.Close()
+
+				_, err = io.Copy(f, rc)
+				logErr(err)
+			}
+		}
+		Shapefile := "/tmp/" + RandomFileName + "/" + ShapeName
+		myshape, err := shp.Open(Shapefile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer myshape.Close()
+		driver := gdal.OGRDriverByName("ESRI Shapefile")
+		fmt.Println(driver)
+		datasource, _ := driver.Open(Shapefile, 0)
+		fmt.Println(datasource.LayerCount())
+		layer := datasource.LayerByIndex(0)
+		myfeature := layer.Feature(0)
+		geom := myfeature.Geometry()
+		spatialRef := gdal.CreateSpatialReference("PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"X\",EAST],AXIS[\"Y\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext  +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]")
+		geom.TransformTo(spatialRef)
+		fmt.Println(geom.ToWKT())
+		// fmt.Println(geom.ToGML())
+		fmt.Println(geom.ToJSON())
+		//fmt.Println(geom.ToKML())
+		fmt.Println("ZZZ")
+		fmt.Println(geom)
+		var myGeoJSON GeoJSON
+		json.Unmarshal([]byte(geom.ToJSON()), &myGeoJSON)
+		var myGeom Geom
+		myGeom.Title = r.FormValue("title")
+		myGeom.Rings = myGeoJSON.Coordinates
+		fmt.Println(myGeom)
+		fmt.Println("a")
+		srcdatasource, _ := driver.Open("/tmp/tl_2010_35_place105.shp", 0)
+		fmt.Println("b")
+		srclayer := srcdatasource.LayerByIndex(0)
+		srclayer = srclayer.ReprojectLayer(2002)
+		var myopts []string
+		fmt.Println("c")
+		tmpds, _ := driver.Create("/tmp/tmp"+RandomFileName+".shp", myopts)
+		fmt.Println("d")
+		tmplayer := tmpds.CreateLayer("tmp", spatialRef, gdal.GT_MultiPolygon, myopts)
+		fmt.Println("e")
+		tmpfeaturedef := gdal.CreateFeatureDefinition("tmp")
+		fmt.Println("f")
+		tmpfeature := tmpfeaturedef.Create()
+		fmt.Println("g")
+		tmpfeature.SetGeometry(geom)
+		fmt.Println("h")
+		tmplayer.Create(tmpfeature)
+		fmt.Println("i")
+
+		outds, _ := driver.Create("/tmp/test.shp", myopts)
+
+		lolb := tmplayer.Feature(0)
+		fmt.Println("dsaf")
+		geomlolb := lolb.Geometry()
+		fmt.Println(geomlolb.ToWKT())
+
+		//
+		// tmplayer := tmpds.CreateLayer("tmp", spatialRef, gdal.GT_MultiPolygon, myopts)
+		// fmt.Println(mybool)
+		fmt.Println("j")
+		outlayer := outds.CreateLayer("wat", spatialRef, gdal.GT_MultiPolygon, myopts)
+		fmt.Println("k")
+		tmpcount, _ := tmplayer.FeatureCount(true)
+		srccount, _ := srclayer.FeatureCount(true)
+		fmt.Println(tmpcount)
+		fmt.Println(srccount)
+		outlayer = srclayer.Clip(&tmplayer, &outlayer)
+		fmt.Println("l")
+		outds.CopyLayer(outlayer, "luil", myopts)
+		fmt.Println(reflect.TypeOf(outds))
+		///////////////////////////////////////////////////////////////////////////
+
+		msg, err := ExtractGen(myGeom, r)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, msg)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, msg)
+		}
+
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, "You must be logged in!")
+	}
+}
+
+func ExtractGen(myGeom Geom, r *http.Request) (string, error) {
+	myGeomMarshal, _ := json.Marshal(myGeom)
+	var usergeom Geom
+	if err := json.Unmarshal([]byte(myGeomMarshal), &usergeom); err != nil {
+
+		return "Could not Unmarshal JSON Request.", errors.New("Could not Unmarshal JSON Request.")
+	}
+	myRings, _ := json.Marshal(myGeom.Rings)
+	fmt.Println(string(myRings))
+
+	// user := GetCookieParts(r)
+	thisuser, err := UserData(r)
+	aoi := "{\"features\":[{\"geometry\":{\"rings\":" + string(myRings) + "}}]}"
+
+	//	aoi := "{\"displayFieldName\":\"\",\"geometryType\":\"esriGeometryPolygon\",\"spatialReference\":{\"wkid\":null},\"fields\":[{\"name\":\"FID\",\"type\":\"esriFieldTypeOID\",\"alias\":\"FID\"},{\"name\":\"Id\",\"type\":\"esriFieldTypeInteger\",\"alias\":\"Id\"},{\"name\":\"Shape_Length\",\"type\":\"esriFieldTypeDouble\",\"alias\":\"Shape_Length\"},{\"name\":\"Shape_Area\",\"type\":\"esriFieldTypeDouble\",\"alias\":\"Shape_Area\"}],\"features\":[{\"attributes\":{\"FID\":0,\"Id\":0},\"geometry\":{\"rings\":" + string(myRings) + "}}],\"exceededTransferLimit\":false}"
+	//layers := "[\"Fire Stations\",\"Communities at Risk\",\"Incorporated City Boundaries\",\"Vegetation Treatments\",\"Watersheds HUC8\",\"Nature Conservancy At-Risk Watersheds\",\"Wildland Urban Interface (WUI)\",\"Where People Live\",\"Wildfire Potential\",\"Land Fire 2014\"]"
+	queryurl := "https://edacarc.unm.edu/arcgis/rest/services/NMWRAP/ExtractData/GPServer/Extract%20Data/submitJob"
+	resp, err := http.PostForm(queryurl, url.Values{
+		"f": {"pjson"},
+		//"Layers_to_Clip":    {string(layers)},
+		"Area_of_Interest": {aoi},
+		//"Feature_Format":    {"File Geodatabase - GDB - .gdb"},
+		//"Raster_Format":     {"File Geodatabase - GDB - .gdb"},
+		//"Spatial_Reference": {"Same+As+Input"}
+	})
+
+	if err != nil {
+		log.Println(err)
+		return "Failed to post geom to service.", errors.New("Failed to post geom to service.")
+	} else {
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return "Failed to read response body.", err
+		} else {
+
+			var jobstat JobStatus
+			fmt.Println(string(body))
+			json.Unmarshal(body, &jobstat)
+			if jobstat.JobStatus == "esriJobSubmitted" {
+				fmt.Println(jobstat.JobID)
+				//Put db stuff here and if err not nil then return:
+				db, err := sql.Open("mysql", dbuser+":"+dbpass+"@/"+dbname)
+
+				if err != nil {
+
+					return "DB err", err
+				}
+				defer db.Close()
+				err = db.Ping()
+				if err != nil {
+
+					return "DB Ping test failed", err
+				}
+
+				TheQuery := "INSERT INTO extractjobs (email,jobid,status)  VALUES (\"" + thisuser["email"] + "\",\"" + jobstat.JobID + "\",\"1\");"
+				//log.Println(TheQuery)
+				_, err = db.Exec(TheQuery)
+				if err != nil {
+					log.Fatal(err)
+					return "Failed to insert job into DB.", err
+				} else {
+					log.Println(myGeom.History)
+					if myGeom.History != true {
+						geomtitle := myGeom.Title
+						marstring, _ := json.Marshal(myGeom)
+						AreaQuery := "INSERT INTO areasofinterest (userid,geom,title)  VALUES ('" + thisuser["id"] + "','" + string(marstring) + "','" + geomtitle + "');"
+						log.Println(AreaQuery)
+						_, err = db.Exec(AreaQuery)
+						if err != nil {
+							log.Fatal(err)
+						}
+					}
+					return "Extract task submitted. An e-mail will be sent to " + thisuser["email"] + " with job status updates.", nil
+				}
+
+			} else {
+
+				return "Job failed to submit.", errors.New("Job failed to submit.")
+
+			}
+
+		}
+	}
+
+	if err != nil {
+		log.Println(err)
+	}
+
+	fmt.Println(thisuser)
+	return "good", nil
 }
 
 func GetReportFromUpload(w http.ResponseWriter, r *http.Request) {

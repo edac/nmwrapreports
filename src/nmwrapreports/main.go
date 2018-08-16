@@ -116,6 +116,14 @@ func main() {
 			}
 		}()
 
+		tickermin := time.NewTicker(time.Minute * 1)
+		go func() {
+			for t := range tickermin.C {
+				ExtractJobs()
+				_ = t
+			}
+		}()
+
 		listensocket := configf.IP + ":" + configf.Port
 		router := NewRouter()
 		r := handlers.LoggingHandler(os.Stdout, router)
@@ -157,6 +165,11 @@ func contains(s []string, e string) bool {
 	}
 	return false
 }
+
+// //ExtractJobs func
+// func ExtractJobs() {
+// 	fmt.Println("Extract jobs")
+// }
 
 //cleanup cutoff
 
