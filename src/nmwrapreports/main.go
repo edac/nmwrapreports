@@ -23,16 +23,13 @@ var CODE string
 // CODENAME is like a major version string
 var CODENAME string
 
-//create a DB handle
-
+//altpath is used if you need an alternate path for some web servers.
 var altpath string
 
+//dbuser pass and name and secret to be pulled from config
 var dbuser string
-
 var dbpass string
-
 var dbname string
-
 var secret string
 
 // var tokenmap map[string]string
@@ -41,25 +38,19 @@ type tokenz map[string]string
 var tokenmap tokenz
 
 func init() {
-	tokenmap = NewSet("tokenstring")
+	//init tokenmap for later use.
+	s := make(tokenz, len("tokenstring"))
+	s["email"] = "tokenstring"
+	tokenmap = s
 
 }
 
-func NewSet(slice string) tokenz {
-	s := make(tokenz, len(slice))
-
-	s["email"] = slice
-
-	return s
-}
-
+// keys and claims for use in jwt tokens/cookies
 var mySigningKey []byte
-
 var token *jwt.Token
-
 var claims jwt.MapClaims
 
-//UserClaims struct
+//UserClaims for jwt
 type UserClaims struct {
 	Admin bool   `json:"admin"`
 	Name  string `json:"name"`
@@ -68,18 +59,12 @@ type UserClaims struct {
 }
 
 func main() {
-	//tokenmap := make(map[string]string)
-	//tokenmap["email"] = "tokenstring"
-	log.Println(tokenmap)
+	//if no args are given then load defaults.
 	argsWithoutProg := os.Args[1:]
-
 	if len(argsWithoutProg) > 0 {
 		if argsWithoutProg[0] == "install" {
-
 			if _, err := os.Stat("/etc/nmwrapreports/"); os.IsNotExist(err) {
-
 				pathErr := os.MkdirAll("/etc/nmwrapreports/", 0777)
-
 				if pathErr != nil {
 					fmt.Println(pathErr)
 				}
@@ -89,15 +74,13 @@ func main() {
 					fmt.Println(err)
 				}
 				os.OpenFile("/var/log/nmwrapreports.log", os.O_RDONLY|os.O_CREATE, 0666)
-
 			}
-
 		} else {
 			fmt.Println("Unknown param")
 		}
 	} else {
-		VERSION = "1.2"
-		CODENAME = "ice"
+		VERSION = "1.5"
+		CODENAME = "water"
 		var configf = ReadConfig() //this is in config.go
 
 		altpath = configf.AltPath
@@ -108,6 +91,8 @@ func main() {
 		mySigningKey = []byte(secret)
 		token = jwt.New(jwt.SigningMethodHS256)
 		claims = token.Claims.(jwt.MapClaims)
+
+		//cleanup job ran every hour.
 		ticker := time.NewTicker(time.Hour * 1)
 		go func() {
 			for t := range ticker.C {
@@ -116,6 +101,7 @@ func main() {
 			}
 		}()
 
+		//extract job mailer run every minute.
 		tickermin := time.NewTicker(time.Minute * 1)
 		go func() {
 			for t := range tickermin.C {
@@ -166,15 +152,10 @@ func contains(s []string, e string) bool {
 	return false
 }
 
-// //ExtractJobs func
-// func ExtractJobs() {
-// 	fmt.Println("Extract jobs")
-// }
-
-//cleanup cutoff
+//cleanup function to delete files in tmp.
 
 func cleanup(window string) {
-	//	var window=ReadConfig().DownloadWindow
+
 	var cut, _ = strconv.Atoi(window)
 	var cutoff = time.Duration(cut) * time.Hour
 

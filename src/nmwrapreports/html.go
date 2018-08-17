@@ -12,6 +12,7 @@ const FrontpageTmpl string = `<!DOCTYPE html>
 </body>
 </html>`
 
+//NewAccountMail template for sending new users a welcome message
 const NewAccountMail string = `<!DOCTYPE HTML PUBLIC "-//W3C//DTD XHTML 1.0 Transitional //EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 
@@ -591,6 +592,7 @@ const NewAccountMail string = `<!DOCTYPE HTML PUBLIC "-//W3C//DTD XHTML 1.0 Tran
 
 </html>`
 
+//PasswordReset - When a user requests new pw
 const PasswordReset string = `<!DOCTYPE HTML PUBLIC "-//W3C//DTD XHTML 1.0 Transitional //EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 
@@ -1172,6 +1174,7 @@ const PasswordReset string = `<!DOCTYPE HTML PUBLIC "-//W3C//DTD XHTML 1.0 Trans
 
 </html>`
 
+//DataExtractSucess - Download link for sucessful extract job
 const DataExtractSucess string = `<!DOCTYPE HTML PUBLIC "-//W3C//DTD XHTML 1.0 Transitional //EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><head>
 <!--[if gte mso 9]><xml>
  <o:OfficeDocumentSettings>
@@ -1650,6 +1653,7 @@ font-size: 0px; } }
 
 </body></html>`
 
+//DataExtractMessage - When Extract fails
 const DataExtractMessage string = `<!DOCTYPE HTML PUBLIC "-//W3C//DTD XHTML 1.0 Transitional //EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><head>
 <!--[if gte mso 9]><xml>
  <o:OfficeDocumentSettings>

@@ -46,12 +46,6 @@ var routes = Routes{
 		Version,
 	},
 	Route{
-		"GetPOSTGeom",
-		"GET",
-		"/postgeom",
-		GetPOSTGeom,
-	},
-	Route{
 		"POSTGeom",
 		"POST",
 		"/postgeom",
